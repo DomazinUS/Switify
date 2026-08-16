@@ -1,0 +1,1401 @@
+/********************************************************************************
+ * File: tsl_utils.cpp
+ * Author: ppkantorski
+ * Description: 
+ *   'tsl_utils.cpp' provides the implementation of various utility functions
+ *   defined in 'tsl_utils.hpp' for the Ultrahand Overlay project. This source file
+ *   includes functionality for system checks, input handling, time-based interpolation,
+ *   and other application-specific features essential for operating custom overlays
+ *   on the Nintendo Switch.
+ *
+ *   For the latest updates and contributions, visit the project's GitHub repository:
+ *   GitHub Repository: https://github.com/ppkantorski/Ultrahand-Overlay
+ *
+ *   Note: This notice is integral to the project's documentation and must not be 
+ *   altered or removed.
+ *
+ *  Licensed under both GPLv2 and CC-BY-4.0
+ *  Copyright (c) 2023-2026 ppkantorski
+ ********************************************************************************/
+
+#include <tsl_utils.hpp>
+
+//#include <cstdlib>
+extern "C" { // assertion override
+    void __assert_func(const char *_file, int _line, const char *_func, const char *_expr ) {
+        abort();
+    }
+}
+
+namespace ult {
+
+    void formatTimestamp(time_t t, char* buf, size_t bufSize) {
+        struct tm tm;
+        localtime_r(&t, &tm);
+        int hour12 = tm.tm_hour % 12;
+        if (hour12 == 0) hour12 = 12;
+        std::snprintf(buf, bufSize, "%d:%02d %s",
+                      hour12, tm.tm_min, (tm.tm_hour >= 12) ? "PM" : "AM");
+    }
+
+    double cos(double x) {
+        //static constexpr double PI = 3.14159265358979323846;
+        static constexpr double TWO_PI = 6.28318530717958647692;
+        static constexpr double HALF_PI = 1.57079632679489661923;
+        
+        x = x - TWO_PI * static_cast<int>(x * 0.159154943091895);
+        if (x < 0) x += TWO_PI;
+        
+        int sign = 1;
+        if (x > _M_PI) {
+           x -= _M_PI;
+           sign = -1;
+        }
+        if (x > HALF_PI) {
+           x = _M_PI - x;
+           sign = -sign;
+        }
+        
+        const double x2 = x * x;
+        return sign * (1.0 + x2 * (-0.5 + x2 * (0.04166666666666666 + x2 * (-0.001388888888888889 + x2 * (0.0000248015873015873 - x2 * 0.0000002755731922398589)))));
+    }
+
+    bool correctFrameSize; // for detecting the correct Overlay display size
+
+    u16 DefaultFramebufferWidth = 448;            ///< Width of the framebuffer
+    u16 DefaultFramebufferHeight = 720;           ///< Height of the framebuffer
+
+    bool windowedLayerPixelPerfect = false;
+
+    std::unordered_map<std::string, std::string> translationCache;
+    
+    std::unordered_map<u64, OverlayCombo> g_entryCombos;
+    std::atomic<bool> launchingOverlay(false);
+    std::atomic<bool> settingsInitialized(false);
+    std::atomic<bool> currentForeground(false);
+
+    // Helper function to read file content into a string
+    bool readFileContent(const std::string& filePath, std::string& content) {
+        FILE* file = fopen(filePath.c_str(), "r");
+        if (!file) {
+            #if USING_LOGGING_DIRECTIVE
+            logMessage("Failed to open JSON file: " + filePath);
+            #endif
+            return false;
+        }
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), file) != nullptr) {
+            content += buffer;
+        }
+        fclose(file);
+        
+        return true;
+    }
+    
+    // Helper function to parse JSON-like content into a map
+    void parseJsonContent(const std::string& content, std::unordered_map<std::string, std::string>& result) {
+        size_t pos = 0;
+        size_t keyStart, keyEnd, colonPos, valueStart, valueEnd;
+        std::string key, value;
+        
+        auto normalizeNewlines = [](std::string &s) {
+            size_t n = 0;
+            while ((n = s.find("\\n", n)) != std::string::npos) {
+                s.replace(n, 2, "\n");
+                n += 1;
+            }
+        };
+        
+        while ((pos = content.find('"', pos)) != std::string::npos) {
+            keyStart = pos + 1;
+            keyEnd = content.find('"', keyStart);
+            if (keyEnd == std::string::npos) break;
+            
+            key = content.substr(keyStart, keyEnd - keyStart);
+            colonPos = content.find(':', keyEnd);
+            if (colonPos == std::string::npos) break;
+            
+            valueStart = content.find('"', colonPos);
+            valueEnd = content.find('"', valueStart + 1);
+            if (valueStart == std::string::npos || valueEnd == std::string::npos) break;
+            
+            value = content.substr(valueStart + 1, valueEnd - valueStart - 1);
+            
+            // Convert escaped newlines (\\n) into real ones
+            normalizeNewlines(key);
+            normalizeNewlines(value);
+            
+            result[key] = value;
+            
+            key.clear();
+            value.clear();
+            pos = valueEnd + 1; // Move to next pair
+        }
+    }
+    
+    // Function to parse JSON key-value pairs into a map
+    bool parseJsonToMap(const std::string& filePath, std::unordered_map<std::string, std::string>& result) {
+        std::string content;
+        if (!readFileContent(filePath, content)) {
+            return false;
+        }
+        
+        parseJsonContent(content, result);
+        return true;
+    }
+    
+    // Function to load translations from a JSON-like file into the translation cache
+    bool loadTranslationsFromJSON(const std::string& filePath) {
+        return parseJsonToMap(filePath, translationCache);
+    }
+
+    // Function to clear the translation cache
+    void clearTranslationCache() {
+        translationCache.clear();
+        translationCache.rehash(0);
+    }
+    
+    
+    u16 activeHeaderHeight = 97;
+
+    bool consoleIsDocked() {
+        Result rc = apmInitialize();
+        if (R_FAILED(rc)) return false;
+        
+        ApmPerformanceMode perfMode = ApmPerformanceMode_Invalid;
+        rc = apmGetPerformanceMode(&perfMode);
+        apmExit();
+        
+        return R_SUCCEEDED(rc) && (perfMode == ApmPerformanceMode_Boost);
+    }
+
+    std::string getBuildIdAsString() {
+        u64 pid = 0;
+        if (R_FAILED(pmdmntGetApplicationProcessId(&pid)) || R_FAILED(ldrDmntInitialize()))
+            return NULL_STR;
+        
+        LoaderModuleInfo moduleInfos[2];
+        s32 count = 0;
+        Result rc = ldrDmntGetProcessModuleInfo(pid, moduleInfos, 2, &count);
+        ldrDmntExit();
+        
+        if (R_FAILED(rc) || count == 0)
+            return NULL_STR;
+        
+        u64 buildid;
+        std::memcpy(&buildid, moduleInfos[1].build_id, sizeof(u64));
+        
+        char buildIdStr[17];
+        snprintf(buildIdStr, sizeof(buildIdStr), "%016lX", __builtin_bswap64(buildid));
+        return std::string(buildIdStr);
+    }
+    
+
+    std::string getTitleIdAsString() {
+        u64 pid = 0, tid = 0;
+        if (R_FAILED(pmdmntGetApplicationProcessId(&pid)) ||
+            R_FAILED(pmdmntGetProgramId(&tid, pid)))
+            return NULL_STR;
+    
+        char tidStr[17];
+        snprintf(tidStr, sizeof(tidStr), "%016lX", tid);
+        return std::string(tidStr);
+    }
+
+    
+    std::string lastTitleID;
+    std::atomic<bool> resetForegroundCheck(false); // initialize as true
+    std::atomic<u64> foregroundReassertStartTick(0); // 0 = burst inactive
+    std::atomic<bool> internalTouchReleased(true);
+
+    u32 layerEdge = 0;
+    bool useRightAlignment = false;
+    bool useSwipeToOpen = true;
+    s32 swipeOffset = 0; // "swipe_offset" — swipe-to-open deadzone calibration
+
+    bool useLaunchCombos = true;
+    //bool useLaunchRecall = true;
+    //bool usePageRecall = true;
+    bool useNotifications = true;
+    bool useNotificationsHotkey = true;
+    bool useStartupNotification = true;
+    bool silenceNotifications = false;
+    bool useSoundEffects = true;
+    bool useHapticFeedback = false;
+    bool useAutoNTPSync = true;
+    bool useStickNavigation = true;
+    bool usePageSwap = false;
+    bool useSwitch2Style = true;
+    bool useDynamicLogo = false;
+    bool useDynamicTableColors = true;
+    bool useSelectionBG = true;
+    bool useSelectionText = true;
+    bool useSelectionValue = false;
+
+    std::atomic<bool> noClickableItems{false};
+    
+    #if IS_LAUNCHER_DIRECTIVE
+    std::atomic<bool> overlayLaunchRequested{false};
+    std::string requestedOverlayPath;
+    std::string requestedOverlayArgs;
+    std::mutex overlayLaunchMutex;
+    #endif
+    
+    // CUSTOM SECTION START
+    std::atomic<float> backWidth;
+    std::atomic<float> selectWidth;
+    std::atomic<float> nextPageWidth;
+    std::atomic<bool> inMainMenu{false};
+    std::atomic<bool> inHiddenMode{false};
+    std::atomic<bool> inSettingsMenu{false};
+    std::atomic<bool> inSubSettingsMenu{false};
+    std::atomic<bool> inOverlaysPage{false};
+    std::atomic<bool> inPackagesPage{false};
+
+    std::atomic<bool> hasNextPageButton{false};
+    
+    bool firstBoot = true; // for detecting first boot
+    bool reloadingBoot = false; // for detecting reloading boots
+    
+    // Define an atomic bool for interpreter completion
+    std::atomic<bool> threadFailure(false);
+    std::atomic<bool> runningInterpreter(false);
+    std::atomic<bool> shakingProgress(true);
+    
+    std::atomic<bool> isHidden(false);
+    std::atomic<bool> externalAbortCommands(false);
+    
+    bool disableTransparency = false;
+    bool useOpaqueScreenshots = false;
+    
+    std::atomic<bool> onTrackBar(false);
+    std::atomic<bool> allowSlide(false);
+    std::atomic<bool> unlockedSlide(false);
+    
+    
+
+    void atomicToggle(std::atomic<bool>& b) {
+        bool expected = b.load(std::memory_order_relaxed);
+        for (;;) {
+            const bool desired = !expected;
+            if (b.compare_exchange_weak(expected, desired,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_relaxed)) {
+                break; // success
+            }
+            // expected has been updated with the current value on failure; loop continues
+        }
+    }
+
+    
+    bool updateMenuCombos = false;
+
+
+    const std::array<KeyInfo, 18> KEYS_INFO = {{
+        { HidNpadButton_L, "L", "\uE0E4" }, { HidNpadButton_R, "R", "\uE0E5" },
+        { HidNpadButton_ZL, "ZL", "\uE0E6" }, { HidNpadButton_ZR, "ZR", "\uE0E7" },
+        { HidNpadButton_AnySL, "SL", "\uE0E8" }, { HidNpadButton_AnySR, "SR", "\uE0E9" },
+        { HidNpadButton_Left, "DLEFT", "\uE0ED" }, { HidNpadButton_Up, "DUP", "\uE0EB" },
+        { HidNpadButton_Right, "DRIGHT", "\uE0EE" }, { HidNpadButton_Down, "DDOWN", "\uE0EC" },
+        { HidNpadButton_A, "A", "\uE0E0" }, { HidNpadButton_B, "B", "\uE0E1" },
+        { HidNpadButton_X, "X", "\uE0E2" }, { HidNpadButton_Y, "Y", "\uE0E3" },
+        { HidNpadButton_StickL, "LS", "\uE08A" }, { HidNpadButton_StickR, "RS", "\uE08B" },
+        { HidNpadButton_Minus, "MINUS", "\uE0B6" }, { HidNpadButton_Plus, "PLUS", "\uE0B5" }
+    }};
+
+    static std::unordered_map<std::string, std::string> createButtonCharMap() {
+        std::unordered_map<std::string, std::string> map;
+        for (const auto& keyInfo : KEYS_INFO) {
+            map[keyInfo.name] = keyInfo.glyph;
+        }
+        return map;
+    }
+    
+    std::unordered_map<std::string, std::string> buttonCharMap = createButtonCharMap();
+    
+    
+    void convertComboToUnicode(std::string& combo) {
+        // Quick check to see if the string contains a '+'
+        if (combo.find('+') == std::string::npos) {
+            return;  // No '+' found, nothing to modify
+        }
+
+        // Exit early if the combo contains any spaces
+        if (combo.find(' ') != std::string::npos) {
+            return;  // Spaces found, return without modifying
+        }
+        
+        std::string unicodeCombo;
+        bool modified = false;
+        size_t start = 0;
+        const size_t length = combo.length();
+        size_t end = 0;  // Moved outside the loop
+        std::string token;  // Moved outside the loop
+        auto it = buttonCharMap.end();  // Initialize iterator once outside the loop
+        
+        // Iterate through the combo string and split by '+'
+        for (size_t i = 0; i <= length; ++i) {
+            if (i == length || combo[i] == '+') {
+                // Get the current token (trimmed)
+                end = i;  // Reuse the end variable
+                while (start < end && std::isspace(combo[start])) start++;  // Trim leading spaces
+                while (end > start && std::isspace(combo[end - 1])) end--;  // Trim trailing spaces
+                
+                token = combo.substr(start, end - start);  // Reuse the token variable
+                it = buttonCharMap.find(token);  // Reuse the iterator
+                
+                if (it != buttonCharMap.end()) {
+                    unicodeCombo += it->second;  // Append the mapped Unicode value
+                    modified = true;
+                } else {
+                    unicodeCombo += token;  // Append the original token if not found
+                }
+                
+                if (i != length) {
+                    unicodeCombo += "+";  // Only append '+' if we're not at the end
+                }
+                
+                start = i + 1;  // Move to the next token
+            }
+        }
+        
+        // If a modification was made, update the original combo
+        if (modified) {
+            combo = unicodeCombo;
+        }
+    }
+    
+    
+    CONSTEXPR_STRING std::string whiteColor = "FFFFFF";
+    CONSTEXPR_STRING std::string blackColor = "000000";
+    CONSTEXPR_STRING std::string greyColor = "AAAAAA";
+    
+    std::atomic<bool> languageWasChanged{false};
+
+    // --- Variable declarations (no inline init = no constructor code per-variable) ---
+    #if IS_LAUNCHER_DIRECTIVE
+    std::string ENGLISH;
+    std::string SPANISH;
+    std::string FRENCH;
+    std::string GERMAN;
+    std::string JAPANESE;
+    std::string KOREAN;
+    std::string ITALIAN;
+    std::string DUTCH;
+    std::string PORTUGUESE;
+    std::string RUSSIAN;
+    std::string UKRAINIAN;
+    std::string POLISH;
+    std::string SIMPLIFIED_CHINESE;
+    std::string TRADITIONAL_CHINESE;
+    std::string OVERLAYS;
+    std::string OVERLAYS_ABBR;
+    std::string OVERLAY;
+    std::string HIDDEN_OVERLAYS;
+    std::string PACKAGES;
+    std::string PACKAGE;
+    std::string HIDDEN_PACKAGES;
+    std::string HIDDEN;
+    std::string HIDE_OVERLAY;
+    std::string HIDE_PACKAGE;
+    std::string LAUNCH_ARGUMENTS;
+    std::string FORCE_AMS110_SUPPORT;
+    std::string QUICK_LAUNCH;
+    std::string BOOT_COMMANDS;
+    std::string EXIT_COMMANDS;
+    std::string ERROR_LOGGING;
+    std::string COMMANDS;
+    std::string SETTINGS;
+    std::string FAVORITE;
+    std::string MAIN_SETTINGS;
+    std::string UI_SETTINGS;
+    std::string WIDGET;
+    std::string WIDGET_ITEMS;
+    std::string WIDGET_SETTINGS;
+    std::string CLOCK;
+    std::string BATTERY;
+    std::string SOC_TEMPERATURE;
+    std::string PCB_TEMPERATURE;
+    std::string BACKDROP;
+    std::string BORDER;
+    std::string DYNAMIC_BORDER;
+    std::string DYNAMIC_TEMPS;
+    std::string CENTER_ALIGNMENT;
+    std::string EXTENDED_BACKDROP;
+    std::string MISCELLANEOUS;
+
+    std::string INPUT_SETTINGS;
+    std::string LAUNCH_COMBOS;
+    std::string SWIPE_TO_OPEN;
+    std::string HAPTIC_FEEDBACK;
+    std::string STICK_NAVIGATION;
+    std::string HOLD_DURATION;
+
+    std::string FEATURE_SETTINGS;
+    std::string OPAQUE_SCREENSHOTS;
+    std::string RIGHT_SIDE_MODE;
+    std::string NTP_SYNC_DOWNLOADS;
+
+    std::string MENU_SETTINGS;
+    std::string PACKAGES_MENU;
+    std::string USER_GUIDE;
+    std::string SHOW_HIDDEN;
+    std::string SHOW_DELETE;
+    std::string SHOW_UNSUPPORTED;
+    std::string PAGE_SWAP;
+    std::string OVERLAY_VERSIONS;
+    std::string PACKAGE_VERSIONS;
+    std::string CLEAN_VERSIONS;
+
+    std::string THEME_SETTINGS;
+    std::string SWITCH_2_STYLE;
+    std::string DYNAMIC_LOGO;
+    std::string DYNAMIC_TABLES;
+    std::string SELECTION_BACKGROUND;
+    std::string SELECTION_TEXT;
+    std::string SELECTION_VALUE;
+    std::string LIBULTRAHAND_TITLES;
+    std::string LIBULTRAHAND_VERSIONS;
+    std::string PACKAGE_TITLES;
+    std::string IN_PACKAGE_TITLES;
+
+    std::string KEY_COMBO;
+    std::string MODE;
+    std::string LAUNCH_MODES;
+    std::string LANGUAGE;
+    std::string OVERLAY_INFO;
+    std::string SOFTWARE_UPDATE;
+    std::string UPDATE_ULTRAHAND;
+    std::string SYSTEM;
+    std::string DEVICE_INFO;
+    std::string FIRMWARE;
+    std::string BOOTLOADER;
+    std::string HARDWARE;
+    std::string MEMORY;
+    std::string VENDOR;
+    std::string MODEL;
+    std::string STORAGE;
+    std::string OVERLAY_MEMORY;
+    std::string NOT_ENOUGH_MEMORY;
+    std::string WALLPAPER_SUPPORT_DISABLED;
+    //std::string SOUND_SUPPORT_DISABLED;
+    std::string WALLPAPER_SUPPORT_ENABLED;
+    std::string SOUND_SUPPORT_ENABLED;
+    std::string EXIT_OVERLAY_SYSTEM;
+    std::string ULTRAHAND_ABOUT;
+    std::string ULTRAHAND_CREDITS_START;
+    std::string ULTRAHAND_CREDITS_END;
+    std::string LOCAL_IP;
+    std::string WALLPAPER;
+    std::string THEME;
+    std::string SOUNDS;
+    std::string DEFAULT;
+    std::string ROOT_PACKAGE;
+    std::string SORT_PRIORITY;
+    std::string OPTIONS;
+    std::string FAILED_TO_OPEN;
+
+    std::string NOTIFICATIONS;
+    std::string NOTIFICATION_SETTINGS;
+    std::string SILENCE_NOTIFICATIONS;
+    std::string STARTUP_NOTIFICATION;
+    std::string MAX_SLOTS;
+    std::string API_NOTIFICATIONS;
+    std::string API_TOGGLE_HOTKEY;
+    std::string DISMISS_NOTIFICATION;
+    std::string API_TOGGLE;
+    std::string CLICK;
+    std::string TAP;
+    std::string HOLD_FOR_4S;
+
+    std::string PACKAGE_INFO;
+    std::string _TITLE;
+    std::string _VERSION;
+    std::string _CREATOR;
+    std::string _ABOUT;
+    std::string _CREDITS;
+    std::string SETTINGS_MENU;
+    std::string SCRIPT_OVERLAY;
+    std::string STAR_FAVORITE;
+    std::string APP_SETTINGS;
+    std::string ON_MAIN_MENU;
+    std::string ON_A_COMMAND;
+    std::string ON_OVERLAY_PACKAGE;
+    std::string ULTRAHAND_HAS_STARTED;
+    std::string ULTRAHAND_HAS_RESTARTED;
+    std::string NEW_UPDATE_IS_AVAILABLE;
+    std::string DELETE_PACKAGE;
+    std::string DELETE_OVERLAY;
+    std::string SELECTION_IS_EMPTY;
+    std::string FORCED_SUPPORT_WARNING;
+    std::string TASK_IS_COMPLETE;
+    std::string TASK_HAS_FAILED;
+    std::string REBOOT_TO;
+    std::string REBOOT;
+    std::string SHUTDOWN;
+    std::string BOOT_ENTRY;
+    std::string INI_ENTRY;
+    #endif
+
+    std::string INCOMPATIBLE_WARNING;
+    std::string OVERLAY_DOES_NOT_EXIST;
+    std::string SYSTEM_RAM;
+    std::string FREE;
+    std::string UNAVAILABLE_SELECTION;
+    std::string ON;
+    std::string OFF;
+    std::string OK;
+    std::string BACK;
+    std::string HIDE;
+    std::string CANCEL;
+    std::string GAP_1;
+    std::string GAP_2;
+
+    std::atomic<float> halfGap = 0.0f;
+
+    #if USING_WIDGET_DIRECTIVE
+    std::string SUNDAY;
+    std::string MONDAY;
+    std::string TUESDAY;
+    std::string WEDNESDAY;
+    std::string THURSDAY;
+    std::string FRIDAY;
+    std::string SATURDAY;
+    std::string JANUARY;
+    std::string FEBRUARY;
+    std::string MARCH;
+    std::string APRIL;
+    std::string MAY;
+    std::string JUNE;
+    std::string JULY;
+    std::string AUGUST;
+    std::string SEPTEMBER;
+    std::string OCTOBER;
+    std::string NOVEMBER;
+    std::string DECEMBER;
+    std::string SUN;
+    std::string MON;
+    std::string TUE;
+    std::string WED;
+    std::string THU;
+    std::string FRI;
+    std::string SAT;
+    std::string JAN;
+    std::string FEB;
+    std::string MAR;
+    std::string APR;
+    std::string MAY_ABBR;
+    std::string JUN;
+    std::string JUL;
+    std::string AUG;
+    std::string SEP;
+    std::string OCT;
+    std::string NOV;
+    std::string DEC;
+    #endif
+
+
+    // --- Single source-of-truth table ---
+
+    struct LangEntry { std::string* var; const char* key; const char* defaultVal; };
+
+    static constexpr LangEntry LANG_TABLE[] = {
+        #if IS_LAUNCHER_DIRECTIVE
+        {&ENGLISH,                    "ENGLISH",                    "English"},
+        {&SPANISH,                    "SPANISH",                    "Spanish"},
+        {&FRENCH,                     "FRENCH",                     "French"},
+        {&GERMAN,                     "GERMAN",                     "German"},
+        {&JAPANESE,                   "JAPANESE",                   "Japanese"},
+        {&KOREAN,                     "KOREAN",                     "Korean"},
+        {&ITALIAN,                    "ITALIAN",                    "Italian"},
+        {&DUTCH,                      "DUTCH",                      "Dutch"},
+        {&PORTUGUESE,                 "PORTUGUESE",                 "Portuguese"},
+        {&RUSSIAN,                    "RUSSIAN",                    "Russian"},
+        {&UKRAINIAN,                  "UKRAINIAN",                  "Ukrainian"},
+        {&POLISH,                     "POLISH",                     "Polish"},
+        {&SIMPLIFIED_CHINESE,         "SIMPLIFIED_CHINESE",         "Simplified Chinese"},
+        {&TRADITIONAL_CHINESE,        "TRADITIONAL_CHINESE",        "Traditional Chinese"},
+        {&OVERLAYS,                   "OVERLAYS",                   "Overlays"},
+        {&OVERLAYS_ABBR,              "OVERLAYS_ABBR",              "Overlays"},
+        {&OVERLAY,                    "OVERLAY",                    "Overlay"},
+        {&HIDDEN_OVERLAYS,            "HIDDEN_OVERLAYS",            "Hidden Overlays"},
+        {&PACKAGES,                   "PACKAGES",                   "Packages"},
+        {&PACKAGE,                    "PACKAGE",                    "Package"},
+        {&HIDDEN_PACKAGES,            "HIDDEN_PACKAGES",            "Hidden Packages"},
+        {&HIDDEN,                     "HIDDEN",                     "Hidden"},
+        {&HIDE_OVERLAY,               "HIDE_OVERLAY",               "Hide Overlay"},
+        {&HIDE_PACKAGE,               "HIDE_PACKAGE",               "Hide Package"},
+        {&LAUNCH_ARGUMENTS,           "LAUNCH_ARGUMENTS",           "Launch Arguments"},
+        {&FORCE_AMS110_SUPPORT,       "FORCE_AMS110_SUPPORT",       "Force AMS110+ Support"},
+        {&QUICK_LAUNCH,               "QUICK_LAUNCH",               "Quick Launch"},
+        {&BOOT_COMMANDS,              "BOOT_COMMANDS",              "Boot Commands"},
+        {&EXIT_COMMANDS,              "EXIT_COMMANDS",              "Exit Commands"},
+        {&ERROR_LOGGING,              "ERROR_LOGGING",              "Error Logging"},
+        {&COMMANDS,                   "COMMANDS",                   "Commands"},
+        {&SETTINGS,                   "SETTINGS",                   "Settings"},
+        {&FAVORITE,                   "FAVORITE",                   "Favorite"},
+        {&MAIN_SETTINGS,              "MAIN_SETTINGS",              "Main Settings"},
+        {&UI_SETTINGS,                "UI_SETTINGS",                "UI Settings"},
+        {&WIDGET,                     "WIDGET",                     "Widget"},
+        {&WIDGET_ITEMS,               "WIDGET_ITEMS",               "Widget Items"},
+        {&WIDGET_SETTINGS,            "WIDGET_SETTINGS",            "Widget Settings"},
+        {&CLOCK,                      "CLOCK",                      "Clock"},
+        {&BATTERY,                    "BATTERY",                    "Battery"},
+        {&SOC_TEMPERATURE,            "SOC_TEMPERATURE",            "SOC Temperature"},
+        {&PCB_TEMPERATURE,            "PCB_TEMPERATURE",            "PCB Temperature"},
+        {&BACKDROP,                   "BACKDROP",                   "Backdrop"},
+        {&BORDER,                     "BORDER",                     "Border"},
+        {&DYNAMIC_BORDER,             "DYNAMIC_BORDER",             "Dynamic Border"},
+        {&DYNAMIC_TEMPS,              "DYNAMIC_TEMPS",              "Dynamic Temps"},
+        {&CENTER_ALIGNMENT,           "CENTER_ALIGNMENT",           "Center Alignment"},
+        {&EXTENDED_BACKDROP,          "EXTENDED_BACKDROP",          "Extended Backdrop"},
+        {&MISCELLANEOUS,              "MISCELLANEOUS",              "Miscellaneous"},
+        {&INPUT_SETTINGS,             "INPUT_SETTINGS",             "Input Settings"},
+        {&LAUNCH_COMBOS,              "LAUNCH_COMBOS",              "Launch Combos"},
+        {&SWIPE_TO_OPEN,              "SWIPE_TO_OPEN",              "Swipe to Open"},
+        {&HAPTIC_FEEDBACK,            "HAPTIC_FEEDBACK",            "Haptic Feedback"},
+        {&STICK_NAVIGATION,           "STICK_NAVIGATION",           "Stick Navigation"},
+        {&HOLD_DURATION,              "HOLD_DURATION",              "Hold Duration"},
+        {&FEATURE_SETTINGS,           "FEATURE_SETTINGS",           "Feature Settings"},
+        {&OPAQUE_SCREENSHOTS,         "OPAQUE_SCREENSHOTS",         "Opaque Screenshots"},
+        {&RIGHT_SIDE_MODE,            "RIGHT_SIDE_MODE",            "Right-side Mode"},
+        {&NTP_SYNC_DOWNLOADS,         "NTP_SYNC_DOWNLOADS",         "NTP Sync Downloads"},
+        {&MENU_SETTINGS,              "MENU_SETTINGS",              "Menu Settings"},
+        {&PACKAGES_MENU,              "PACKAGES_MENU",              "Packages Menu"},
+        {&USER_GUIDE,                 "USER_GUIDE",                 "User Guide"},
+        {&SHOW_HIDDEN,                "SHOW_HIDDEN",                "Show Hidden"},
+        {&SHOW_DELETE,                "SHOW_DELETE",                "Show Delete"},
+        {&SHOW_UNSUPPORTED,           "SHOW_UNSUPPORTED",           "Show Unsupported"},
+        {&PAGE_SWAP,                  "PAGE_SWAP",                  "Page Swap"},
+        {&OVERLAY_VERSIONS,           "OVERLAY_VERSIONS",           "Overlay Versions"},
+        {&PACKAGE_VERSIONS,           "PACKAGE_VERSIONS",           "Package Versions"},
+        {&CLEAN_VERSIONS,             "CLEAN_VERSIONS",             "Clean Versions"},
+        {&THEME_SETTINGS,             "THEME_SETTINGS",             "Theme Settings"},
+        {&SWITCH_2_STYLE,             "SWITCH_2_STYLE",             "Switch 2 Style"},
+        {&DYNAMIC_LOGO,               "DYNAMIC_LOGO",               "Dynamic Logo"},
+        {&DYNAMIC_TABLES,             "DYNAMIC_TABLES",             "Dynamic Tables"},
+        {&SELECTION_BACKGROUND,       "SELECTION_BACKGROUND",       "Selection Background"},
+        {&SELECTION_TEXT,             "SELECTION_TEXT",             "Selection Text"},
+        {&SELECTION_VALUE,            "SELECTION_VALUE",            "Selection Value"},
+        {&LIBULTRAHAND_TITLES,        "LIBULTRAHAND_TITLES",        "libultrahand Titles"},
+        {&LIBULTRAHAND_VERSIONS,      "LIBULTRAHAND_VERSIONS",      "libultrahand Versions"},
+        {&PACKAGE_TITLES,             "PACKAGE_TITLES",             "Package Titles"},
+        {&IN_PACKAGE_TITLES,          "IN_PACKAGE_TITLES",          "In-Package Titles"},
+        {&KEY_COMBO,                  "KEY_COMBO",                  "Key Combo"},
+        {&MODE,                       "MODE",                       "Mode"},
+        {&LAUNCH_MODES,               "LAUNCH_MODES",               "Launch Modes"},
+        {&LANGUAGE,                   "LANGUAGE",                   "Language"},
+        {&OVERLAY_INFO,               "OVERLAY_INFO",               "Overlay Info"},
+        {&SOFTWARE_UPDATE,            "SOFTWARE_UPDATE",            "Software Update"},
+        {&UPDATE_ULTRAHAND,           "UPDATE_ULTRAHAND",           "Update Ultrahand"},
+        {&SYSTEM,                     "SYSTEM",                     "System"},
+        {&DEVICE_INFO,                "DEVICE_INFO",                "Device Info"},
+        {&FIRMWARE,                   "FIRMWARE",                   "Firmware"},
+        {&BOOTLOADER,                 "BOOTLOADER",                 "Bootloader"},
+        {&HARDWARE,                   "HARDWARE",                   "Hardware"},
+        {&MEMORY,                     "MEMORY",                     "Memory"},
+        {&VENDOR,                     "VENDOR",                     "Vendor"},
+        {&MODEL,                      "MODEL",                      "Model"},
+        {&STORAGE,                    "STORAGE",                    "Storage"},
+        {&OVERLAY_MEMORY,             "OVERLAY_MEMORY",             "Overlay Memory"},
+        {&NOT_ENOUGH_MEMORY,          "NOT_ENOUGH_MEMORY",          "Not enough memory."},
+        {&WALLPAPER_SUPPORT_DISABLED, "WALLPAPER_SUPPORT_DISABLED", "Wallpaper support disabled."},
+        {&WALLPAPER_SUPPORT_ENABLED,  "WALLPAPER_SUPPORT_ENABLED",  "Wallpaper support enabled."},
+        {&SOUND_SUPPORT_ENABLED,      "SOUND_SUPPORT_ENABLED",      "Sound support enabled."},
+        {&EXIT_OVERLAY_SYSTEM,        "EXIT_OVERLAY_SYSTEM",        "Exit Overlay System"},
+        {&ULTRAHAND_ABOUT,            "ULTRAHAND_ABOUT",            "Ultrahand Overlay is a customizable overlay ecosystem for overlays, commands, hotkeys, and advanced system interaction."},
+        {&ULTRAHAND_CREDITS_START,    "ULTRAHAND_CREDITS_START",    "Special thanks to "},
+        {&ULTRAHAND_CREDITS_END,      "ULTRAHAND_CREDITS_END",      " and many others. ♥"},
+        {&LOCAL_IP,                   "LOCAL_IP",                   "Local IP"},
+        {&WALLPAPER,                  "WALLPAPER",                  "Wallpaper"},
+        {&THEME,                      "THEME",                      "Theme"},
+        {&SOUNDS,                     "SOUNDS",                     "Sounds"},
+        {&DEFAULT,                    "DEFAULT",                    "default"},
+        {&ROOT_PACKAGE,               "ROOT_PACKAGE",               "Root Package"},
+        {&SORT_PRIORITY,              "SORT_PRIORITY",              "Sort Priority"},
+        {&OPTIONS,                    "OPTIONS",                    "Options"},
+        {&FAILED_TO_OPEN,             "FAILED_TO_OPEN",             "Failed to open file"},
+        {&NOTIFICATIONS,              "NOTIFICATIONS",              "Notifications"},
+        {&NOTIFICATION_SETTINGS,      "NOTIFICATION_SETTINGS",      "Notification Settings"},
+        {&SILENCE_NOTIFICATIONS,      "SILENCE_NOTIFICATIONS",      "Silence Notifications"},
+        {&STARTUP_NOTIFICATION,       "STARTUP_NOTIFICATION",       "Startup Notification"},
+        {&MAX_SLOTS,                  "MAX_SLOTS",                  "Max Slots"},
+        {&API_NOTIFICATIONS,          "API_NOTIFICATIONS",          "API Notifications"},
+        {&API_TOGGLE_HOTKEY,          "API_TOGGLE_HOTKEY",          "API Toggle Hotkey"},
+        {&DISMISS_NOTIFICATION,       "DISMISS_NOTIFICATION",       "Dismiss Notification"},
+        {&API_TOGGLE,                 "API_TOGGLE",                 "API Toggle"},
+        {&CLICK,                      "CLICK",                      "click"},
+        {&TAP,                        "TAP",                        "tap"},
+        {&HOLD_FOR_4S,                "HOLD_FOR_4S",                "hold for 4s"},
+        {&PACKAGE_INFO,               "PACKAGE_INFO",               "Package Info"},
+        {&_TITLE,                     "_TITLE",                     "Title"},
+        {&_VERSION,                   "_VERSION",                   "Version"},
+        {&_CREATOR,                   "_CREATOR",                   "Creator(s)"},
+        {&_ABOUT,                     "_ABOUT",                     "About"},
+        {&_CREDITS,                   "_CREDITS",                   "Credits"},
+        {&SETTINGS_MENU,              "SETTINGS_MENU",              "Settings Menu"},
+        {&SCRIPT_OVERLAY,             "SCRIPT_OVERLAY",             "Script Overlay"},
+        {&STAR_FAVORITE,              "STAR_FAVORITE",              "Star/Favorite"},
+        {&APP_SETTINGS,               "APP_SETTINGS",               "App Settings"},
+        {&ON_MAIN_MENU,               "ON_MAIN_MENU",               "on Main Menu"},
+        {&ON_A_COMMAND,               "ON_A_COMMAND",               "on a command"},
+        {&ON_OVERLAY_PACKAGE,         "ON_OVERLAY_PACKAGE",         "on overlay/package"},
+        {&ULTRAHAND_HAS_STARTED,      "ULTRAHAND_HAS_STARTED",      "Ultrahand has started."},
+        {&ULTRAHAND_HAS_RESTARTED,    "ULTRAHAND_HAS_RESTARTED",    "Ultrahand has restarted."},
+        {&NEW_UPDATE_IS_AVAILABLE,    "NEW_UPDATE_IS_AVAILABLE",    "New update is available!"},
+        {&DELETE_PACKAGE,             "DELETE_PACKAGE",             "Delete Package"},
+        {&DELETE_OVERLAY,             "DELETE_OVERLAY",             "Delete Overlay"},
+        {&SELECTION_IS_EMPTY,         "SELECTION_IS_EMPTY",         "Selection is empty!"},
+        {&FORCED_SUPPORT_WARNING,     "FORCED_SUPPORT_WARNING",     "Forcing support can be dangerous."},
+        {&TASK_IS_COMPLETE,           "TASK_IS_COMPLETE",           "Task is complete!"},
+        {&TASK_HAS_FAILED,            "TASK_HAS_FAILED",            "Task has failed."},
+        {&REBOOT_TO,                  "REBOOT_TO",                  "Reboot To"},
+        {&REBOOT,                     "REBOOT",                     "Reboot"},
+        {&SHUTDOWN,                   "SHUTDOWN",                   "Shutdown"},
+        {&BOOT_ENTRY,                 "BOOT_ENTRY",                 "Boot Entry"},
+        {&INI_ENTRY,                  "INI_ENTRY",                  "INI Entry"},
+        #endif
+
+        {&INCOMPATIBLE_WARNING,       "INCOMPATIBLE_WARNING",       "Incompatible on AMS v1.10+"},
+        {&OVERLAY_DOES_NOT_EXIST,     "OVERLAY_DOES_NOT_EXIST",     "Overlay does not exist!"},
+        {&SYSTEM_RAM,                 "SYSTEM_RAM",                 "System RAM"},
+        {&FREE,                       "FREE",                       "free"},
+        {&UNAVAILABLE_SELECTION,      "UNAVAILABLE_SELECTION",      "Not available"},
+        {&ON,                         "ON",                         "On"},
+        {&OFF,                        "OFF",                        "Off"},
+        {&OK,                         "OK",                         "OK"},
+        {&BACK,                       "BACK",                       "Back"},
+        {&HIDE,                       "HIDE",                       "Hide"},
+        {&CANCEL,                     "CANCEL",                     "Cancel"},
+        {&GAP_1,                      "GAP_1",                      "     "},
+        {&GAP_2,                      "GAP_2",                      "  "},
+
+        #if USING_WIDGET_DIRECTIVE
+        {&SUNDAY,                     "SUNDAY",                     "Sunday"},
+        {&MONDAY,                     "MONDAY",                     "Monday"},
+        {&TUESDAY,                    "TUESDAY",                    "Tuesday"},
+        {&WEDNESDAY,                  "WEDNESDAY",                  "Wednesday"},
+        {&THURSDAY,                   "THURSDAY",                   "Thursday"},
+        {&FRIDAY,                     "FRIDAY",                     "Friday"},
+        {&SATURDAY,                   "SATURDAY",                   "Saturday"},
+        {&JANUARY,                    "JANUARY",                    "January"},
+        {&FEBRUARY,                   "FEBRUARY",                   "February"},
+        {&MARCH,                      "MARCH",                      "March"},
+        {&APRIL,                      "APRIL",                      "April"},
+        {&MAY,                        "MAY",                        "May"},
+        {&JUNE,                       "JUNE",                       "June"},
+        {&JULY,                       "JULY",                       "July"},
+        {&AUGUST,                     "AUGUST",                     "August"},
+        {&SEPTEMBER,                  "SEPTEMBER",                  "September"},
+        {&OCTOBER,                    "OCTOBER",                    "October"},
+        {&NOVEMBER,                   "NOVEMBER",                   "November"},
+        {&DECEMBER,                   "DECEMBER",                   "December"},
+        {&SUN,                        "SUN",                        "Sun"},
+        {&MON,                        "MON",                        "Mon"},
+        {&TUE,                        "TUE",                        "Tue"},
+        {&WED,                        "WED",                        "Wed"},
+        {&THU,                        "THU",                        "Thu"},
+        {&FRI,                        "FRI",                        "Fri"},
+        {&SAT,                        "SAT",                        "Sat"},
+        {&JAN,                        "JAN",                        "Jan"},
+        {&FEB,                        "FEB",                        "Feb"},
+        {&MAR,                        "MAR",                        "Mar"},
+        {&APR,                        "APR",                        "Apr"},
+        {&MAY_ABBR,                   "MAY_ABBR",                   "May"},
+        {&JUN,                        "JUN",                        "Jun"},
+        {&JUL,                        "JUL",                        "Jul"},
+        {&AUG,                        "AUG",                        "Aug"},
+        {&SEP,                        "SEP",                        "Sep"},
+        {&OCT,                        "OCT",                        "Oct"},
+        {&NOV,                        "NOV",                        "Nov"},
+        {&DEC,                        "DEC",                        "Dec"},
+        #endif
+    };
+
+    static constexpr size_t LANG_TABLE_SIZE = sizeof(LANG_TABLE) / sizeof(LANG_TABLE[0]);
+
+
+    // --- reinitializeLangVars: just a loop now ---
+    void reinitializeLangVars() {
+        for (size_t i = 0; i < LANG_TABLE_SIZE; ++i)
+            *LANG_TABLE[i].var = LANG_TABLE[i].defaultVal;
+    }
+
+
+    // --- parseLanguage: same loop, different source ---
+    void parseLanguage(const std::string& langFile) {
+        std::unordered_map<std::string, std::string> jsonMap;
+        if (!parseJsonToMap(langFile, jsonMap)) {
+            #if USING_LOGGING_DIRECTIVE
+            logMessage("Failed to parse language file: " + langFile);
+            #endif
+            return;
+        }
+        for (size_t i = 0; i < LANG_TABLE_SIZE; ++i) {
+            auto it = jsonMap.find(LANG_TABLE[i].key);
+            *LANG_TABLE[i].var = (it != jsonMap.end()) ? it->second : LANG_TABLE[i].defaultVal;
+        }
+    }
+
+
+    // --- localizeTimeStr and applyLangReplacements unchanged ---
+    #if USING_WIDGET_DIRECTIVE
+    void localizeTimeStr(char* timeStr) {
+        static const struct { const char* key; std::string* val; } mappings[] = {
+            {"Sunday",    &SUNDAY},    {"Monday",    &MONDAY},    {"Tuesday",   &TUESDAY},
+            {"Wednesday", &WEDNESDAY}, {"Thursday",  &THURSDAY},  {"Friday",    &FRIDAY},
+            {"Saturday",  &SATURDAY},
+            {"January",   &JANUARY},   {"February",  &FEBRUARY},  {"March",     &MARCH},
+            {"April",     &APRIL},     {"June",      &JUNE},      {"July",      &JULY},
+            {"August",    &AUGUST},    {"September", &SEPTEMBER}, {"October",   &OCTOBER},
+            {"November",  &NOVEMBER},  {"December",  &DECEMBER},
+            {"Sun", &SUN}, {"Mon", &MON}, {"Tue", &TUE}, {"Wed", &WED},
+            {"Thu", &THU}, {"Fri", &FRI}, {"Sat", &SAT},
+            {"Jan", &JAN}, {"Feb", &FEB}, {"Mar", &MAR}, {"Apr", &APR},
+            {"May", &MAY_ABBR}, {"Jun", &JUN}, {"Jul", &JUL}, {"Aug", &AUG},
+            {"Sep", &SEP}, {"Oct", &OCT}, {"Nov", &NOV}, {"Dec", &DEC},
+        };
+    
+        std::string result = timeStr;
+        for (const auto& m : mappings) {
+            size_t pos = 0;
+            const size_t keyLen = strlen(m.key);
+            while ((pos = result.find(m.key, pos)) != std::string::npos) {
+                result.replace(pos, keyLen, *m.val);
+                pos += m.val->size();
+            }
+        }
+        strcpy(timeStr, result.c_str());
+    }
+    #endif
+
+    void applyLangReplacements(std::string& text, bool isValue) {
+        if (isValue) {
+            if (text.length() == 2 && text[0] == 'O' && text[1] == 'n') { text = ON; return; }
+            if (text.length() == 3 && text[0] == 'O' && text[1] == 'f' && text[2] == 'f') { text = OFF; return; }
+        }
+    #if IS_LAUNCHER_DIRECTIVE
+        else {
+            switch (text.length()) {
+                case 6:
+                    if (text == "Reboot") { text = REBOOT; }
+                    break;
+                case 8:
+                    if (text == "Shutdown") { text = SHUTDOWN; }
+                    break;
+                case 9:
+                    if (text == "Reboot To") { text = REBOOT_TO; }
+                    else if (text == "INI Entry") { text = INI_ENTRY; }
+                    break;
+                case 10:
+                    if (text == "Boot Entry") { text = BOOT_ENTRY; }
+                    break;
+            }
+        }
+    #endif
+    }
+    
+    
+    
+    std::atomic<bool> refreshWallpaperNow(false);
+    std::atomic<bool> refreshWallpaper(false);
+    std::atomic<bool> refreshCombos(false);
+    std::vector<u8> wallpaperData; 
+    std::atomic<bool> inPlot(false);
+    
+    std::mutex wallpaperMutex;
+    std::condition_variable cv;
+    
+    bool loadRGBA8888toRGBA4444(const std::string& filePath, u8* dst, size_t srcSize) {
+        FILE* f = fopen(filePath.c_str(), "rb");
+        if (!f) return false;
+    
+        const uint8x8_t mask = vdup_n_u8(0xF0);
+        constexpr size_t chunkBytes = 128 * 1024;
+        uint8_t chunkBuffer[chunkBytes];
+        size_t totalRead = 0;
+    
+        setvbuf(f, nullptr, _IOFBF, chunkBytes);
+    
+        while (totalRead < srcSize) {
+            const size_t toRead = std::min(srcSize - totalRead, chunkBytes);
+            const size_t bytesRead = fread(chunkBuffer, 1, toRead, f);
+            if (bytesRead == 0) { fclose(f); return false; }
+    
+            const uint8_t* src = chunkBuffer;
+            size_t i = 0;
+            for (; i + 16 <= bytesRead; i += 16) {
+                uint8x16_t data = vld1q_u8(src + i);
+                uint8x8x2_t sep = vuzp_u8(vget_low_u8(data), vget_high_u8(data));
+                vst1_u8(dst, vorr_u8(vand_u8(sep.val[0], mask), vshr_n_u8(sep.val[1], 4)));
+                dst += 8;
+            }
+            for (; i + 1 < bytesRead; i += 2)
+                *dst++ = (src[i] & 0xF0) | (src[i+1] >> 4);
+    
+            totalRead += bytesRead;
+        }
+    
+        fclose(f);
+        return true;
+    }
+
+    
+    void loadWallpaperFile(const std::string& filePath, s32 width, s32 height) {
+        const size_t srcSize = width * height * 4;
+        wallpaperData.resize(srcSize / 2);
+        if (!isFile(filePath) ||
+            !loadRGBA8888toRGBA4444(filePath, wallpaperData.data(), srcSize))
+            wallpaperData.clear();
+    }
+    
+
+    void loadWallpaperFileWhenSafe() {
+        if (!limitedMemory && !inPlot.load(std::memory_order_acquire) && !refreshWallpaper.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> lock(wallpaperMutex);
+            cv.wait(lock, [] { return !inPlot.load(std::memory_order_acquire) && !refreshWallpaper.load(std::memory_order_acquire); });
+            if (wallpaperData.empty() && isFile(WALLPAPER_PATH)) {
+                loadWallpaperFile(WALLPAPER_PATH);
+            }
+        }
+    }
+
+
+    void reloadWallpaper() {
+        // Signal that wallpaper is being refreshed
+        refreshWallpaper.store(true, std::memory_order_release);
+        
+        // Lock the mutex for condition waiting
+        std::unique_lock<std::mutex> lock(wallpaperMutex);
+        
+        // Wait for inPlot to be false before reloading the wallpaper
+        cv.wait(lock, [] { return !inPlot.load(std::memory_order_acquire); });
+        
+        // Clear the current wallpaper data
+        wallpaperData.clear();
+        
+        // Reload the wallpaper file
+        if (isFile(WALLPAPER_PATH)) {
+            loadWallpaperFile(WALLPAPER_PATH);
+        }
+        
+        // Signal that wallpaper has finished refreshing
+        refreshWallpaper.store(false, std::memory_order_release);
+        
+        // Notify any waiting threads
+        cv.notify_all();
+    }
+
+    
+    std::atomic<bool> themeIsInitialized(false); // for loading the theme once in OverlayFrame / HeaderOverlayFrame
+    
+    // Variables for touch commands
+    std::atomic<bool> touchingBack(false);
+    std::atomic<bool> touchingSelect(false);
+    std::atomic<bool> touchingNextPage(false);
+    std::atomic<bool> touchingMenu(false);
+    std::atomic<bool> shortTouchAndRelease(false);
+    std::atomic<bool> longTouchAndRelease(false);
+    std::atomic<bool> simulatedBack(false);
+    std::atomic<bool> simulatedSelect(false);
+    std::atomic<bool> simulatedNextPage(false);
+    std::atomic<bool> simulatedMenu(false);
+    std::atomic<bool> stillTouching(false);
+    std::atomic<bool> interruptedTouch(false);
+    std::atomic<bool> touchInBounds(false);
+    
+    
+#if USING_WIDGET_DIRECTIVE
+    // Battery implementation
+    bool powerInitialized = false;
+    bool powerCacheInitialized;
+    uint32_t powerCacheCharge;
+    bool powerCacheIsCharging;
+    PsmSession powerSession;
+    
+    std::atomic<uint32_t> batteryCharge{0};
+    std::atomic<bool> isCharging{false};
+    
+    bool powerGetDetails(uint32_t *_batteryCharge, bool *_isCharging) {
+        static uint64_t last_call_ns = 0;
+        
+        // Ensure power system is initialized
+        if (!powerInitialized) {
+            return false;
+        }
+        
+        // Get the current time in nanoseconds
+        const uint64_t now_ns = nowNs();
+        
+        // 3 seconds in nanoseconds
+        static constexpr uint64_t min_delay_ns = 3000000000ULL;
+        
+        // Check if enough time has elapsed or if cache is not initialized
+        const bool useCache = (now_ns - last_call_ns <= min_delay_ns) && powerCacheInitialized;
+        if (!useCache) {
+            PsmChargerType charger = PsmChargerType_Unconnected;
+            Result rc = psmGetBatteryChargePercentage(_batteryCharge);
+            bool hwReadsSucceeded = R_SUCCEEDED(rc);
+            
+            if (hwReadsSucceeded) {
+                rc = psmGetChargerType(&charger);
+                hwReadsSucceeded &= R_SUCCEEDED(rc);
+                *_isCharging = (charger != PsmChargerType_Unconnected);
+                
+                if (hwReadsSucceeded) {
+                    // Update cache
+                    powerCacheCharge = *_batteryCharge;
+                    powerCacheIsCharging = *_isCharging;
+                    powerCacheInitialized = true;
+                    last_call_ns = now_ns; // Update last call time after successful hardware read
+                    return true;
+                }
+            }
+            
+            // Use cached values if the hardware read fails
+            if (powerCacheInitialized) {
+                *_batteryCharge = powerCacheCharge;
+                *_isCharging = powerCacheIsCharging;
+                return hwReadsSucceeded; // Return false if hardware read failed but cache is valid
+            }
+            
+            // Return false if cache is not initialized and hardware read failed
+            return false;
+        }
+        
+        // Use cached values if not enough time has passed
+        *_batteryCharge = powerCacheCharge;
+        *_isCharging = powerCacheIsCharging;
+        return true; // Return true as cache is used
+    }
+    
+    
+    void powerInit(void) {
+        uint32_t charge = 0;
+        bool charging = false;
+        
+        powerCacheInitialized = false;
+        powerCacheCharge = 0;
+        powerCacheIsCharging = false;
+        
+        if (!powerInitialized) {
+            Result rc = psmInitialize();
+            if (R_SUCCEEDED(rc)) {
+                rc = psmBindStateChangeEvent(&powerSession, 1, 1, 1);
+                
+                if (R_FAILED(rc))
+                    psmExit();
+                
+                if (R_SUCCEEDED(rc)) {
+                    powerInitialized = true;
+                    ult::powerGetDetails(&charge, &charging);
+                    ult::batteryCharge.store(charge, std::memory_order_release);
+                    ult::isCharging.store(charging, std::memory_order_release);
+                }
+            }
+        }
+    }
+    
+    void powerExit(void) {
+        if (powerInitialized) {
+            psmUnbindStateChangeEvent(&powerSession);
+            psmExit();
+            powerInitialized = false;
+            powerCacheInitialized = false;
+        }
+    }
+#endif
+    
+    
+    // Temperature Implementation
+    std::atomic<float> PCB_temperature{0.0f};
+    std::atomic<float> SOC_temperature{0.0f};
+    
+    /*
+    I2cReadRegHandler was taken from Switch-OC-Suite source code made by KazushiMe
+    Original repository link (Deleted, last checked 15.04.2023): https://github.com/KazushiMe/Switch-OC-Suite
+    */
+    
+    Result I2cReadRegHandler(u8 reg, I2cDevice dev, u16 *out) {
+        struct readReg {
+            u8 send;
+            u8 sendLength;
+            u8 sendData;
+            u8 receive;
+            u8 receiveLength;
+        };
+        
+        I2cSession _session;
+        
+        Result res = i2cOpenSession(&_session, dev);
+        if (res)
+            return res;
+        
+        u16 val;
+        
+        struct readReg readRegister = {
+            .send = 0 | (I2cTransactionOption_Start << 6),
+            .sendLength = sizeof(reg),
+            .sendData = reg,
+            .receive = 1 | (I2cTransactionOption_All << 6),
+            .receiveLength = sizeof(val),
+        };
+        
+        res = i2csessionExecuteCommandList(&_session, &val, sizeof(val), &readRegister, sizeof(readRegister));
+        if (res) {
+            i2csessionClose(&_session);
+            return res;
+        }
+        
+        *out = val;
+        i2csessionClose(&_session);
+        return 0;
+    }
+    
+    
+    // Common helper function to read temperature (integer and fractional parts)
+    Result ReadTemperature(float *temperature, u8 integerReg, u8 fractionalReg, bool integerOnly) {
+        u16 rawValue;
+        u8 val;
+        s32 integerPart = 0;
+        float fractionalPart = 0.0f;  // Change this to a float to retain fractional precision
+        
+        // Read the integer part of the temperature
+        Result res = I2cReadRegHandler(integerReg, I2cDevice_Tmp451, &rawValue);
+        if (R_FAILED(res)) {
+            return res;  // Error during I2C read
+        }
+        
+        val = (u8)rawValue;  // Cast the value to an 8-bit unsigned integer
+        integerPart = val;    // Integer part of temperature in Celsius
+        
+        if (integerOnly)
+        {
+            *temperature = static_cast<float>(integerPart);  // Ensure it's treated as a float
+            return 0;  // Return only integer part if requested
+        }
+        
+        // Read the fractional part of the temperature
+        res = I2cReadRegHandler(fractionalReg, I2cDevice_Tmp451, &rawValue);
+        if (R_FAILED(res)) {
+            return res;  // Error during I2C read
+        }
+        
+        val = (u8)rawValue;  // Cast the value to an 8-bit unsigned integer
+        fractionalPart = static_cast<float>(val >> 4) * 0.0625f;  // Convert upper 4 bits into fractional part
+        
+        // Combine integer and fractional parts
+        *temperature = static_cast<float>(integerPart) + fractionalPart;
+        
+        return 0;
+    }
+    
+    // Function to get the SOC temperature
+    Result ReadSocTemperature(float *temperature, bool integerOnly) {
+        return ReadTemperature(temperature, TMP451_SOC_TEMP_REG, TMP451_SOC_TMP_DEC_REG, integerOnly);
+    }
+    
+    // Function to get the PCB temperature
+    Result ReadPcbTemperature(float *temperature, bool integerOnly) {
+        return ReadTemperature(temperature, TMP451_PCB_TEMP_REG, TMP451_PCB_TMP_DEC_REG, integerOnly);
+    }
+    
+    
+    // Time implementation
+    CONSTEXPR_STRING std::string DEFAULT_DT_FORMAT = "%a %T";
+    std::string datetimeFormat = DEFAULT_DT_FORMAT;
+    
+    
+    // Widget settings
+    bool hideClock, hideBattery, hidePCBTemp, hideSOCTemp, dynamicWidgetColors, dynamicWidgetBorder;
+    bool hideWidgetBackdrop, hideWidgetBorder, centerWidgetAlignment, extendedWidgetBackdrop;
+
+    // Shared helper: single hash lookup instead of count() + at()
+    static bool getBoolFromSection(const std::map<std::string, std::string>& section,
+                                   const std::string& key, bool defaultValue = false) {
+        const auto it = section.find(key);
+        return (it != section.end()) ? (it->second != FALSE_STR) : defaultValue;
+    }
+
+    #if IS_LAUNCHER_DIRECTIVE
+    void reinitializeWidgetVars() {
+        // Load INI data once instead of 8 separate file reads
+        auto ultrahandSection = getKeyValuePairsFromSection(ULTRAHAND_CONFIG_INI_PATH, ULTRAHAND_PROJECT_NAME);
+        
+        hideClock             = getBoolFromSection(ultrahandSection, "hide_clock",               false);
+        hideBattery           = getBoolFromSection(ultrahandSection, "hide_battery",             true);
+        hideSOCTemp           = getBoolFromSection(ultrahandSection, "hide_soc_temp",            true);
+        hidePCBTemp           = getBoolFromSection(ultrahandSection, "hide_pcb_temp",            true);
+        dynamicWidgetColors   = getBoolFromSection(ultrahandSection, "dynamic_widget_colors",    true);
+        dynamicWidgetBorder   = getBoolFromSection(ultrahandSection, "dynamic_widget_border",    true);
+        hideWidgetBackdrop    = getBoolFromSection(ultrahandSection, "hide_widget_backdrop",     false);
+        hideWidgetBorder      = getBoolFromSection(ultrahandSection, "hide_widget_border",       false);
+        centerWidgetAlignment = getBoolFromSection(ultrahandSection, "center_widget_alignment",  true);
+        extendedWidgetBackdrop= getBoolFromSection(ultrahandSection, "extended_widget_backdrop", false);
+    }
+    #endif
+    
+    bool cleanVersionLabels, hideOverlayVersions, hidePackageVersions, useLibultrahandTitles, useLibultrahandVersions, usePackageTitles, usePackageVersions, useInPackageTitles;
+    
+
+
+    
+    // Helper function to convert MB to bytes
+    u64 mbToBytes(u32 mb) {
+        return static_cast<u64>(mb) * 0x100000;
+    }
+    
+    // Helper function to convert bytes to MB
+    u32 bytesToMB(u64 bytes) {
+        return static_cast<u32>(bytes / 0x100000);
+    }
+    
+   
+
+    // Helper function to get version-appropriate default heap size
+    static OverlayHeapSize getDefaultHeapSize() {
+        if (hosversionAtLeast(21, 0, 0)) {
+            return OverlayHeapSize::Size_4MB;  // HOS 21.0.0+
+        } else if (hosversionAtLeast(20, 0, 0)) {
+            return OverlayHeapSize::Size_6MB;  // HOS 20.0.0+
+        } else {
+            return OverlayHeapSize::Size_8MB;  // Older versions
+        }
+    }
+    
+    // Implementation
+    OverlayHeapSize getCurrentHeapSize() {
+        // Fast path: return cached value if already loaded
+        if (heapSizeCache.initialized) {
+            return heapSizeCache.cachedSize;
+        }
+        
+        // Slow path: read from file (only happens once)
+        FILE* f = fopen(ult::OVL_HEAP_CONFIG_PATH.c_str(), "rb");
+        if (!f) {
+            // No config file - use version-specific default
+            heapSizeCache.cachedSize = getDefaultHeapSize();
+            heapSizeCache.initialized = true;
+            return heapSizeCache.cachedSize;
+        }
+        
+        u64 size;
+        if (fread(&size, sizeof(size), 1, f) == 1) {
+            constexpr u64 twoMB = 0x200000;
+            // Only accept multiples of 2MB, excluding 2MB itself
+            if (size != twoMB && size % twoMB == 0) {
+                heapSizeCache.cachedSize = static_cast<OverlayHeapSize>(size);
+                fclose(f);
+                heapSizeCache.initialized = true;
+                return heapSizeCache.cachedSize;
+            }
+        }
+        
+        // Invalid or no data in config - use version-specific default
+        fclose(f);
+        heapSizeCache.cachedSize = getDefaultHeapSize();
+        heapSizeCache.initialized = true;
+        return heapSizeCache.cachedSize;
+    }
+    
+    // Update the global default too
+    HeapSizeCache heapSizeCache;
+    OverlayHeapSize currentHeapSize = getDefaultHeapSize();
+    
+    bool setOverlayHeapSize(OverlayHeapSize heapSize) {
+        ult::createDirectory(ult::NX_OVLLOADER_PATH);
+        
+        FILE* f = fopen(ult::OVL_HEAP_CONFIG_PATH.c_str(), "wb");
+        if (!f) return false;
+        
+        const u64 size = static_cast<u64>(heapSize);
+        const bool success = (fwrite(&size, sizeof(size), 1, f) == 1);
+        fclose(f);
+        
+        // Update cache on successful write
+        if (success) {
+            heapSizeCache.cachedSize = heapSize;
+            heapSizeCache.initialized = true;
+
+            // Create reloading flag to indicate this was an intentional restart
+            ult::createDirectory(ult::FLAGS_PATH);
+            f = fopen(ult::RELOADING_FLAG_FILEPATH.c_str(), "wb");
+            if (f) {
+                fclose(f);  // Empty file, just needs to exist
+            }
+        }
+        
+        return success;
+    }
+    
+    
+    // Implementation
+    bool requestOverlayExit() {
+        ult::createDirectory(ult::NX_OVLLOADER_PATH);
+        
+        FILE* f = fopen(ult::OVL_EXIT_FLAG_PATH.c_str(), "wb");
+        if (!f) return false;
+        
+        // Write a single byte (flag file just needs to exist)
+        u8 flag = 1;
+        bool success = (fwrite(&flag, 1, 1, f) == 1);
+        fclose(f);
+        
+        deleteFileOrDirectory(NOTIFICATIONS_FLAG_FILEPATH);
+        
+        return success;
+    }
+
+    bool requestOverlayReload() {
+        // Create reloading flag to indicate this was an intentional restart
+        ult::createDirectory(ult::FLAGS_PATH);
+        FILE* f = fopen(ult::RELOADING_FLAG_FILEPATH.c_str(), "wb");
+        if (f) {
+            fclose(f);  // Empty file, just needs to exist
+        }
+
+        ult::createDirectory(ult::NX_OVLLOADER_PATH);
+        
+        f = fopen(ult::OVL_RELOAD_FLAG_PATH.c_str(), "wb");
+        if (!f) return false;
+        
+        u8 flag = 1;
+        bool success = (fwrite(&flag, 1, 1, f) == 1);
+        fclose(f);
+        
+        return success;
+    }
+
+    const std::string loaderInfo = envGetLoaderInfo();
+    std::string loaderTitle = extractTitle(loaderInfo);
+
+    bool expandedMemory = false;
+    bool furtherExpandedMemory = false;
+    bool limitedMemory = false;
+    
+    std::string versionLabel;
+    
+    #if IS_LAUNCHER_DIRECTIVE
+    void reinitializeVersionLabels() {
+        // Load INI data once instead of 6 separate file reads
+        auto ultrahandSection = getKeyValuePairsFromSection(ULTRAHAND_CONFIG_INI_PATH, ULTRAHAND_PROJECT_NAME);
+        
+        cleanVersionLabels  = getBoolFromSection(ultrahandSection, "clean_version_labels",  false);
+        hideOverlayVersions = getBoolFromSection(ultrahandSection, "hide_overlay_versions", false);
+        hidePackageVersions = getBoolFromSection(ultrahandSection, "hide_package_versions", false);
+    }
+    #endif
+    
+    
+    // Number of renderer threads to use
+    constexpr unsigned numThreads = 4;//expandedMemory ? 4 : 0;
+    std::vector<std::thread> renderThreads(numThreads);
+
+    void InPlotBarrierCompletion::operator()() noexcept {
+        inPlot.store(false, std::memory_order_release);
+    }
+    std::barrier<InPlotBarrierCompletion> inPlotBarrier(numThreads);
+
+    const s32 bmpChunkSize = ((720 + numThreads - 1) / numThreads);
+    std::atomic<s32> currentRow;
+}

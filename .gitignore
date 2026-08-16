@@ -1,0 +1,47 @@
+# Build trees and compiler output
+/build_*/
+/phase2/build/
+/phase2/build_*/
+/phase2/dist/
+/phase2/dist_*/
+/phase2/overlay/build/
+/phase2/probe/build/
+/phase2/sysmodule/build/
+*.elf
+*.nro
+*.nso
+*.nsp
+*.ovl
+*.nacp
+*.map
+*.o
+*.d
+
+# Generated release packages
+/release/
+/phase2/Switify-Phase2-*/
+/phase2/Switify-Phase2-*.zip
+*.zip
+
+# Runtime diagnostics and user-private state
+/logs/
+*.log
+*.log.previous
+credentials.json
+config.json
+playback-session.json
+app-settings.json
+settings.json
+current-artwork-url*
+artwork-cache/
+
+# Private project handover and local release working notes
+/HANDOVER.md
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.user
+*.suo

@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a controller-first improvement for Switify.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Standalone NRO
+        - Ultrahand overlay
+        - Background service
+        - Shared playback engine
+        - Documentation or packaging
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What is difficult or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe the controller navigation and visible result, not only the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Switch constraints or tradeoffs
+      description: Note any expected memory, networking, audio, or compatibility cost.

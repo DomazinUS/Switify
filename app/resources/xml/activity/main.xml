@@ -1,0 +1,43 @@
+<brls:AppletFrame
+    iconInterpolation="linear"
+    headerHidden="true"
+    footerHidden="false">
+
+    <brls:Box
+        axis="column"
+        width="100%"
+        height="100%"
+        backgroundColor="#0A0C0F">
+
+        <brls:TabFrame
+            title="Switify"
+            icon="@res/icon/icon.jpg"
+            grow="1.0">
+
+            <brls:Tab label="Home">
+                <HomeTab />
+            </brls:Tab>
+
+            <brls:Tab label="Search">
+                <SearchTab />
+            </brls:Tab>
+
+            <brls:Tab label="Your Library">
+                <LibraryTab />
+            </brls:Tab>
+
+            <brls:Tab label="Now Playing">
+                <NowPlayingTab />
+            </brls:Tab>
+
+            <brls:Tab label="Settings">
+                <SettingsTab />
+            </brls:Tab>
+
+        </brls:TabFrame>
+
+        <MiniPlayer />
+
+    </brls:Box>
+
+</brls:AppletFrame>

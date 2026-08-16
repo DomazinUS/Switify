@@ -1,0 +1,6 @@
+message Header {
+    optional string uri = 0x01;
+    optional string content_type = 0x02;
+    optional string method = 0x03;
+    optional sint32 status_code = 0x04;
+}

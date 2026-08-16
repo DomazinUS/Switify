@@ -1,0 +1,98 @@
+<brls:AppletFrame
+    iconInterpolation="linear"
+    headerHidden="true"
+    footerHidden="false">
+
+    <brls:Box
+        width="auto"
+        height="auto"
+        axis="column"
+        grow="1.0"
+        backgroundColor="#0A0C0F">
+
+        <brls:Box
+            axis="row"
+            alignItems="center"
+            paddingTop="24"
+            paddingRight="48"
+            paddingBottom="18"
+            paddingLeft="48">
+
+            <brls:Image
+                id="artwork"
+                width="150"
+                height="150"
+                scalingType="fit"
+                backgroundColor="#1F232A"
+                cornerRadius="10" />
+
+            <brls:Box
+                axis="column"
+                grow="1.0"
+                marginLeft="26">
+
+                <brls:Label
+                    id="title"
+                    fontSize="34"
+                    singleLine="true"
+                    text="Collection" />
+
+                <brls:Label
+                    id="subtitle"
+                    fontSize="17"
+                    textColor="#A8AFBA"
+                    singleLine="true"
+                    marginTop="7"
+                    text="Loading..." />
+
+                <brls:Label
+                    id="description"
+                    fontSize="14"
+                    textColor="#A8AFBA"
+                    marginTop="8"
+                    text="" />
+
+                <brls:Box
+                    id="playAll"
+                    axis="row"
+                    alignItems="center"
+                    justifyContent="center"
+                    width="142"
+                    paddingTop="10"
+                    paddingRight="18"
+                    paddingBottom="10"
+                    paddingLeft="18"
+                    marginTop="16"
+                    cornerRadius="9"
+                    highlightCornerRadius="9"
+                    backgroundColor="#1F232A">
+                    <brls:Label
+                        id="playAllLabel"
+                        fontSize="18"
+                        singleLine="true"
+                        text="Loading" />
+                </brls:Box>
+
+            </brls:Box>
+        </brls:Box>
+
+        <brls:ScrollingFrame
+            width="auto"
+            height="auto"
+            grow="1.0"
+            scrollingBehavior="centered">
+
+            <brls:Box
+                id="list"
+                width="auto"
+                height="auto"
+                axis="column"
+                paddingLeft="48"
+                paddingRight="48"
+                paddingBottom="34" />
+
+        </brls:ScrollingFrame>
+
+    </brls:Box>
+
+</brls:AppletFrame>

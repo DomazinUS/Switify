@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible Switify app, overlay, or background-service problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Switify. Never upload `credentials.json`. Review logs for account identifiers before attaching them.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Standalone NRO
+        - Ultrahand overlay
+        - Background service
+        - Installation or authentication
+        - Build from source
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Switify version
+      placeholder: App 0.6.3 or Overlay 0.4.3
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Console environment
+      description: Switch model, firmware, Atmosphere, Ultrahand, and launch method where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include what you expected, what happened instead, and whether playback was active or paused.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open...
+        2. Select...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or crash report
+      description: Attach the current/previous Switify log or Atmosphere crash report after reviewing it. Never attach credentials.json.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I did not include `credentials.json`, tokens, or other private account data.
+          required: true
+        - label: I checked the documented known limitations, including the N64 Nintendo Switch Online service conflict.
+          required: true
