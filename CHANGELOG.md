@@ -7,16 +7,21 @@ versions are tracked independently because they are separate applications.
 
 ### Added
 
-- Saved shows now come from Spotify's native `libraryV3` data and appear in
-  both the Podcasts Home filter and a dedicated Saved podcasts Library row.
-- Liked Songs and playlists publish their first 50 tracks immediately, with
-  explicit demand-loaded pages for the rest.
+- Saved shows now use Spotify's native `Podcasts & Shows` `libraryV3` filter
+  and appear in both the Podcasts Home filter and a dedicated Saved podcasts
+  Library row.
+- Restored complete Liked Songs and playlist sessions in the NRO, including
+  Play All. Multi-thousand-track collections remain cached after their first
+  load, while the interface materializes only 100 rows at a time.
 
 ### Changed
 
 - Removed unused AAC, MP3, ALAC, and Opus decoder paths. Switify explicitly
   requests Spotify's 160 or 320 kbps OGG Vorbis streams, so this reduces the
   NRO image and working set without removing a selectable format.
+- Shuffle now retries a live queue reorder after cspot finishes promoting the
+  current stream. The highlighted state can no longer silently differ from
+  the audible queue when Shuffle is pressed during track preparation.
 
 ## Overlay and background service 0.4.4 — 2026-08-18
 
@@ -31,6 +36,7 @@ versions are tracked independently because they are separate applications.
   backoff instead of requiring Retry automatic startup after a slow launch.
 - Centered decoded artwork within the player frame and moved the volume
   percentage above its slider.
+- Shares the deterministic, deferred Shuffle queue update used by the NRO.
 
 ### Changed
 

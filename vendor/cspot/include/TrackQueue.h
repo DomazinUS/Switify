@@ -101,6 +101,7 @@ class TrackQueue : public bell::Task {
 
   bool hasTracks();
   bool isFinished();
+  int currentIndex();
   bool skipTrack(SkipDirection dir, bool expectNotify = true);
   bool updateTracks(uint32_t requestedPosition = 0, bool initial = false);
   // Replace future entries while retaining the stream that is playing now.

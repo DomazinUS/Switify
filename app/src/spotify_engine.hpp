@@ -210,7 +210,9 @@ class SpotifyEngine {
       const Collection& collection,
       std::function<void(Result<std::vector<Track>>)> cb);
   // Fetches one Spotify source page without waiting for the entire collection.
-  // Both Switch interfaces use this for responsive, incremental browsing.
+  // The fixed-heap background service uses this for incremental browsing; the
+  // standalone app deliberately keeps complete collections in its session
+  // cache and materializes their UI rows in batches.
   void fetchPlaylistTrackPage(
       const Collection& collection, size_t offset, size_t limit,
       std::function<void(Result<TrackPage>)> cb);
@@ -239,6 +241,7 @@ class SpotifyEngine {
   void savePlaybackSession();
   bool restorePlaybackSession();
   void refreshTrackSavedState(const std::string& uri);
+  bool applyPendingShuffleLocked();
   bool waitForApiRateLimitWindow();
 
   std::string userToken(const std::string& scopes);
@@ -267,13 +270,6 @@ class SpotifyEngine {
   std::unordered_map<std::string, std::vector<Track>> collectionTracksCache;
   std::deque<std::string> collectionTrackCacheOrder;
   size_t cachedCollectionTrackCount = 0;
-#ifndef SWITIFY_BACKGROUND_SERVICE
-  // Demand-loaded NRO pages have their own bounded cache; treating a partial
-  // page as a complete collection would corrupt Play All and pagination.
-  std::unordered_map<std::string, TrackPage> collectionTrackPageCache;
-  std::deque<std::string> collectionTrackPageCacheOrder;
-  size_t cachedCollectionPageTrackCount = 0;
-#endif
   std::unordered_map<std::string, bool> likedStateCache;
   std::unordered_set<std::string> likedStatePending;
   std::unordered_set<std::string> likedMutationPending;
@@ -291,6 +287,10 @@ class SpotifyEngine {
   std::vector<Track> activeQueue;
   size_t activeQueueIndex = 0;
   bool activeQueueHasCurrent = false;
+  // Shuffle can be requested before cspot has promoted the current stream to
+  // the active queue. Retry it on TRACK_INFO so its visual and audible state
+  // cannot silently diverge.
+  bool shuffleReorderPending = false;
   // A persisted session is restored as paused UI state. The first explicit
   // Play command loads it into cspot at the saved track and position.
   bool restoredSessionPendingStart = false;

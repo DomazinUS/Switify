@@ -1830,11 +1830,12 @@ SettingsTab::SettingsTab()
       [](brls::View*) {
         showInformationPage(
             "Changelog", "Complete Switify development history",
-            {{"Standalone 0.6.4 · responsive collections",
-              "Loads Liked Songs and playlists in demand-driven 50-track "
-              "pages instead of blocking on up to 1,000 tracks. Added saved "
-              "podcasts through Spotify's native library data and removed "
-              "unused non-Vorbis decoders from the NRO."},
+            {{"Standalone 0.6.4 · complete cached collections",
+              "Restored complete Liked Songs and playlists with Play All, "
+              "multi-thousand-track session caching, and 100-row lazy UI "
+              "batches. Added followed podcasts through Spotify's exact "
+              "native Podcasts & Shows filter, reliable deferred Shuffle, "
+              "and removed unused non-Vorbis decoders."},
              {"Overlay 0.4.4 · compatibility and paging",
               "Reduced the resident service and artwork footprint, fixed "
               "Nintendo 64 Nintendo Switch Online compatibility, added "
