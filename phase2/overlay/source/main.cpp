@@ -19,6 +19,12 @@
 
 namespace {
 
+#ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
+constexpr const char* OverlayVersion = "v0.4.3-lite1";
+#else
+constexpr const char* OverlayVersion = "v0.4.3";
+#endif
+
 constexpr uint64_t SwitifyProgramId = UINT64_C(0x4200000000535754);
 constexpr const char* ReadyPath =
     "sdmc:/config/Switify/background-ready.log";
@@ -78,6 +84,8 @@ std::string readTextFile(const char* path, size_t maximum = 1024) {
 }
 
 std::string resultText(Result result) {
+  if (result == KERNELRESULT(OutOfResource))
+    return "System resources exhausted";
   char text[40];
   std::snprintf(text, sizeof(text), "0x%08X (M%u D%u)", result,
                 R_MODULE(result), R_DESCRIPTION(result));
@@ -343,8 +351,15 @@ class PlayerElement final : public tsl::elm::Element {
 
   void sync() {
     const std::string next = readTextFile(ArtworkUrlPath);
-    if (next != artworkUrl) {
-      artworkUrl = next;
+    if (next != artworkUrl) artworkUrl = next;
+
+    // Starting artwork networking here rather than in initServices() leaves
+    // the launch path free of the artwork BSD session and worker thread.  A
+    // repeated request is cheap and lets artwork start as soon as a previously
+    // booting service becomes healthy.
+    if (connectionState == ConnectionState::Connected &&
+        currentStatus.service_state == SwitifyServiceState_Ready &&
+        !artworkUrl.empty()) {
       switify::artwork::request(artworkUrl, ArtSize);
     }
   }
@@ -1080,7 +1095,7 @@ class MainGui final : public tsl::Gui {
  public:
   tsl::elm::Element* createUI() override {
     refreshServiceState(false);
-    auto* frame = new tsl::elm::OverlayFrame("Switify", "v0.4.3");
+    auto* frame = new tsl::elm::OverlayFrame("Switify", OverlayVersion);
     auto* list = new tsl::elm::List();
     player = new PlayerElement();
     list->addItem(player, PlayerElement::Height);
@@ -1130,7 +1145,6 @@ class MainGui final : public tsl::Gui {
 class SwitifyOverlay final : public tsl::Overlay {
  public:
   void initServices() override {
-    switify::artwork::initialize();
     refreshServiceState(false);
     if (runningPid == 0) launchService();
   }

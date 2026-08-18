@@ -5,6 +5,7 @@
 /phase2/dist/
 /phase2/dist_*/
 /phase2/overlay/build/
+/phase2/overlay/build_*/
 /phase2/probe/build/
 /phase2/sysmodule/build/
 *.elf

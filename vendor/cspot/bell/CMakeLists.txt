@@ -176,8 +176,38 @@ endif()
 if(NOT BELL_DISABLE_CODECS)
     file(GLOB EXTRA_SOURCES "main/audio-containers/*.cpp" "main/audio-codec/*.cpp" "main/audio-codec/*.c" "main/audio-dsp/*.cpp" "main/audio-dsp/*.c")
 
+    # The codec sources are collected by a broad glob above.  Remove disabled
+    # implementations explicitly so the public codec options actually exclude
+    # their code and third-party header dependencies.
+    if(NOT BELL_CODEC_AAC)
+        list(REMOVE_ITEM EXTRA_SOURCES "${AUDIO_CODEC_DIR}/AACDecoder.cpp")
+        list(REMOVE_ITEM EXTRA_SOURCES
+             "${AUDIO_CONTAINERS_DIR}/ADTSContainer.cpp")
+    endif()
+    if(NOT BELL_CODEC_MP3)
+        list(REMOVE_ITEM EXTRA_SOURCES "${AUDIO_CODEC_DIR}/MP3Decoder.cpp")
+        list(REMOVE_ITEM EXTRA_SOURCES
+             "${AUDIO_CONTAINERS_DIR}/MP3Container.cpp")
+    endif()
+    if(NOT BELL_CODEC_VORBIS)
+        list(REMOVE_ITEM EXTRA_SOURCES "${AUDIO_CODEC_DIR}/VorbisDecoder.cpp")
+    endif()
+    if(NOT BELL_CODEC_OPUS)
+        list(REMOVE_ITEM EXTRA_SOURCES "${AUDIO_CODEC_DIR}/OPUSDecoder.cpp")
+    endif()
+    if(NOT BELL_CODEC_AAC AND NOT BELL_CODEC_MP3)
+        # EncodedAudioStream is an unused legacy AAC/MP3 helper and includes
+        # mp3dec.h unconditionally.  It is unrelated to cspot's Vorbis stream.
+        list(REMOVE_ITEM SOURCES "${IO_DIR}/EncodedAudioStream.cpp")
+        list(REMOVE_ITEM EXTRA_SOURCES "${AUDIO_CODEC_DIR}/DecoderGlobals.cpp")
+        list(REMOVE_ITEM EXTRA_SOURCES
+             "${AUDIO_CONTAINERS_DIR}/AudioContainers.cpp")
+    endif()
+
     list(APPEND SOURCES "${EXTRA_SOURCES}")
-    list(APPEND SOURCES "${AUDIO_CODEC_DIR}/DecoderGlobals.cpp")
+    if(BELL_CODEC_AAC OR BELL_CODEC_MP3)
+        list(APPEND SOURCES "${AUDIO_CODEC_DIR}/DecoderGlobals.cpp")
+    endif()
     list(APPEND SOURCES "${AUDIO_CODEC_DIR}/BaseCodec.cpp")
     list(APPEND SOURCES "${AUDIO_CODEC_DIR}/AudioCodecs.cpp")
     list(APPEND EXTRA_INCLUDES "main/audio-containers/include")
@@ -359,4 +389,3 @@ endif()
 if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     target_compile_definitions(bell PUBLIC PB_NO_STATIC_ASSERT)
 endif()
-

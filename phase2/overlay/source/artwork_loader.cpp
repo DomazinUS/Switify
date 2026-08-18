@@ -1,5 +1,25 @@
 #include "artwork_loader.hpp"
 
+#ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
+
+namespace switify::artwork {
+
+// The compatibility build keeps the player's existing music-note placeholder
+// and never claims the artwork BSD session, worker thread, JPEG buffers, or
+// cache files.  Playback and browsing are owned by the separate service.
+bool initialize() { return true; }
+void shutdown() {}
+void request(const std::string&, int) {}
+void borrow(const uint8_t** pixels, int* width, int* height) {
+  if (pixels) *pixels = nullptr;
+  if (width) *width = 0;
+  if (height) *height = 0;
+}
+
+}  // namespace switify::artwork
+
+#else
+
 #include <curl/curl.h>
 #include <switch.h>
 #include <turbojpeg.h>
@@ -408,7 +428,12 @@ void shutdown() {
 }
 
 void request(const std::string& url, int targetSize) {
-  if (!threadCreated) return;
+  // Artwork is deliberately lazy.  The overlay must be able to launch the
+  // background process before claiming a BSD session and worker thread of its
+  // own; on systems with several resident sysmodules those resources can be
+  // the difference between a successful launch and KernelError_OutOfResource.
+  if (url.empty()) return;
+  if (!threadCreated && !initialize()) return;
   mutexLock(&stateMutex);
   const bool changed = wantedUrl != url;
   wantedUrl = url;
@@ -448,3 +473,5 @@ void borrow(const uint8_t** pixels, int* width, int* height) {
 }
 
 }  // namespace switify::artwork
+
+#endif  // SWITIFY_LIGHTWEIGHT_OVERLAY

@@ -18,6 +18,12 @@ APP_AUTHOR  := HiroshiYamauchi
 APP_VERSION := 0.4.3
 NO_ICON     := 1
 
+ifeq ($(LIGHTWEIGHT),1)
+APP_TITLE   := Switify Lite
+APP_VERSION := 0.4.3-lite1
+DEFINES     += -DSWITIFY_LIGHTWEIGHT_OVERLAY=1
+endif
+
 include $(TOPDIR)/lib/libultrahand/ultrahand.mk
 
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE

@@ -1,10 +1,11 @@
 param(
     [int]$Jobs = 4,
-    [string]$DevkitPro = ""
+    [string]$DevkitPro = "",
+    [switch]$Lightweight
 )
 
 $ErrorActionPreference = "Stop"
-$engineVersion = "0.4.3"
+$engineVersion = if ($Lightweight) { "0.4.3-lite1" } else { "0.4.3" }
 
 $candidates = @()
 if (-not [string]::IsNullOrWhiteSpace($DevkitPro)) { $candidates += $DevkitPro }
@@ -37,7 +38,12 @@ function Convert-ToMsysPath {
 }
 
 $source = Convert-ToMsysPath (Join-Path $PSScriptRoot "phase2\sysmodule")
-$buildWindows = Join-Path $PSScriptRoot "phase2\build_engine"
+$buildName = if ($Lightweight) {
+    "build_engine_lightweight"
+} else {
+    "build_engine"
+}
+$buildWindows = Join-Path $PSScriptRoot "phase2\$buildName"
 $build = Convert-ToMsysPath $buildWindows
 
 $env:Path = "$devkitRoot\devkitA64\bin;$devkitRoot\tools\bin;$msysBin;$env:Path"
@@ -52,6 +58,7 @@ $configureArgs = @(
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_POLICY_VERSION_MINIMUM=3.13"
 )
+if ($Lightweight) { $configureArgs += "-DSWITIFY_LIGHTWEIGHT_OVERLAY=ON" }
 & $cmake @configureArgs
 if ($LASTEXITCODE -ne 0) { throw "Phase 2 engine configuration failed" }
 
@@ -59,11 +66,29 @@ if ($LASTEXITCODE -ne 0) { throw "Phase 2 engine configuration failed" }
 if ($LASTEXITCODE -ne 0) { throw "Phase 2 engine build failed" }
 
 $overlaySource = Convert-ToMsysPath (Join-Path $PSScriptRoot "phase2\overlay")
-& $make "-C" $overlaySource "-j$Jobs"
+$overlayTarget = if ($Lightweight) {
+    "switify-overlay-lightweight"
+} else {
+    "switify-overlay"
+}
+$overlayBuild = if ($Lightweight) { "build_lightweight" } else { "build" }
+$overlayArgs = @(
+    "-C", $overlaySource,
+    "-j$Jobs",
+    "TARGET=$overlayTarget",
+    "BUILD=$overlayBuild"
+)
+if ($Lightweight) { $overlayArgs += "LIGHTWEIGHT=1" }
+& $make @overlayArgs
 if ($LASTEXITCODE -ne 0) { throw "Switify overlay build failed" }
 
 $phase2Windows = Join-Path $PSScriptRoot "phase2"
-$dist = Join-Path $phase2Windows "dist_engine"
+$distName = if ($Lightweight) {
+    "dist_engine_lightweight"
+} else {
+    "dist_engine"
+}
+$dist = Join-Path $phase2Windows $distName
 $phase2Resolved = (Resolve-Path -LiteralPath $phase2Windows).Path
 if (Test-Path -LiteralPath $dist) {
     $distResolved = (Resolve-Path -LiteralPath $dist).Path
@@ -81,7 +106,7 @@ Copy-Item -Force (Join-Path $buildWindows "switify-background.nsp") `
     (Join-Path $titleRoot "exefs.nsp")
 Copy-Item -Force (Join-Path $phase2Windows "sysmodule\toolbox.json") `
     (Join-Path $titleRoot "toolbox.json")
-Copy-Item -Force (Join-Path $phase2Windows "overlay\switify-overlay.ovl") `
+Copy-Item -Force (Join-Path $phase2Windows "overlay\$overlayTarget.ovl") `
     (Join-Path $overlayRoot "Switify.ovl")
 $engineZip = Join-Path $phase2Windows "Switify-Phase2-engine-$engineVersion.zip"
 Compress-Archive -Path (Join-Path $dist "*") -DestinationPath $engineZip -Force
