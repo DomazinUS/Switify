@@ -242,6 +242,7 @@ class SpotifyEngine {
   bool restorePlaybackSession();
   void refreshTrackSavedState(const std::string& uri);
   bool applyPendingShuffleLocked();
+  void schedulePendingShuffleRetry();
   bool waitForApiRateLimitWindow();
 
   std::string userToken(const std::string& scopes);
@@ -291,6 +292,7 @@ class SpotifyEngine {
   // the active queue. Retry it on TRACK_INFO so its visual and audible state
   // cannot silently diverge.
   bool shuffleReorderPending = false;
+  std::atomic<bool> shuffleRetryWorkerActive{false};
   // A persisted session is restored as paused UI state. The first explicit
   // Play command loads it into cspot at the saved track and position.
   bool restoredSessionPendingStart = false;

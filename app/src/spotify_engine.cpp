@@ -91,6 +91,17 @@ bool sameTrack(const SpotifyEngine::Track& left,
   return left.name == right.name && left.artist == right.artist;
 }
 
+uint32_t shuffleSeed() {
+  // Some Switch C++ runtimes expose a deterministic random_device. Mix it with
+  // a monotonic timestamp so consecutive Shuffle requests cannot reproduce the
+  // same queue ordering.
+  const auto ticks = static_cast<uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  std::random_device random;
+  return static_cast<uint32_t>(ticks) ^
+         static_cast<uint32_t>(ticks >> 32) ^ random();
+}
+
 #ifdef SWITIFY_BACKGROUND_SERVICE
 size_t boundBackgroundPlaybackWindow(
     std::vector<SpotifyEngine::Track>& tracks, size_t selectedIndex,
@@ -1473,7 +1484,7 @@ bool SpotifyEngine::applyPendingShuffleLocked() {
       if (index != currentSourceIndex && !activePlaylist[index].uri.empty())
         replacement.push_back(activePlaylist[index]);
     }
-    std::mt19937 generator(std::random_device{}());
+    std::mt19937 generator(shuffleSeed());
     std::shuffle(replacement.begin(), replacement.end(), generator);
     replacement.insert(replacement.begin(), current);
   } else {
@@ -1517,6 +1528,46 @@ bool SpotifyEngine::applyPendingShuffleLocked() {
   return true;
 }
 
+void SpotifyEngine::schedulePendingShuffleRetry() {
+  if (shuffleRetryWorkerActive.exchange(true)) return;
+
+  launchWorker([this] {
+    constexpr int RetryCount = 40;
+    constexpr auto RetryDelay = std::chrono::milliseconds(75);
+    bool applied = false;
+
+    for (int attempt = 0; attempt < RetryCount && running; ++attempt) {
+      {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        if (!shuffleReorderPending) {
+          applied = true;
+          break;
+        }
+        applied = applyPendingShuffleLocked();
+      }
+      if (applied) break;
+      std::this_thread::sleep_for(RetryDelay);
+    }
+
+    bool stillPending = false;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      stillPending = shuffleReorderPending;
+    }
+    shuffleRetryWorkerActive.store(false);
+
+    if (applied) {
+      nxlog::push("Shuffle queue update applied");
+      notifyUpdate();
+      savePlaybackSession();
+    } else if (stillPending) {
+      // TRACK_INFO remains a final retry point if cspot is still promoting the
+      // selected song after this short, non-blocking retry window.
+      nxlog::push("Shuffle queue is still pending track activation");
+    }
+  });
+}
+
 void SpotifyEngine::toggleShuffle() {
   bool enabled = false;
   bool reordered = false;
@@ -1536,6 +1587,7 @@ void SpotifyEngine::toggleShuffle() {
   nxlog::pushf("Shuffle %s%s%s", enabled ? "enabled" : "disabled",
                reordered ? "; active queue reordered" : "",
                deferred ? "; queue update pending" : "");
+  if (deferred) schedulePendingShuffleRetry();
   notifyUpdate();
   savePlaybackSession();
 }
@@ -3257,7 +3309,7 @@ void SpotifyEngine::playTracks(std::vector<Track> tracks, size_t startIndex,
   if (shuffle && tracks.size() > 1) {
     Track selected = tracks[startIndex];
     tracks.erase(tracks.begin() + static_cast<std::ptrdiff_t>(startIndex));
-    std::mt19937 generator(std::random_device{}());
+    std::mt19937 generator(shuffleSeed());
     std::shuffle(tracks.begin(), tracks.end(), generator);
     tracks.insert(tracks.begin(), std::move(selected));
     startIndex = 0;

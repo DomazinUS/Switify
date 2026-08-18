@@ -33,6 +33,8 @@ constexpr const char* ArtworkUrlPath =
 constexpr auto RefreshInterval = std::chrono::milliseconds(500);
 constexpr auto BrowseRefreshInterval = std::chrono::milliseconds(200);
 constexpr unsigned AutomaticLaunchAttempts = 4;
+constexpr auto StartupReadinessTimeout = std::chrono::seconds(6);
+constexpr auto StartupRelaunchDelay = std::chrono::milliseconds(750);
 
 enum class ConnectionState {
   Dormant,
@@ -53,6 +55,8 @@ std::string readyText = "Not started";
 bool automaticLaunchActive = false;
 unsigned automaticLaunchAttempt = 0;
 std::chrono::steady_clock::time_point nextAutomaticLaunch{};
+uint64_t automaticObservedPid = 0;
+std::chrono::steady_clock::time_point automaticObservedAt{};
 
 std::string readLastLine(const char* path, const char* unavailable) {
   FILE* file = std::fopen(path, "r");
@@ -271,8 +275,36 @@ void launchService() {
 
 void beginAutomaticStartup() {
   automaticLaunchActive = true;
-  automaticLaunchAttempt = 0;
-  nextAutomaticLaunch = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  // A process discovered without a working readiness marker is an existing
+  // startup attempt, not proof that startup succeeded. The old state machine
+  // returned forever merely because a PID existed.
+  automaticLaunchAttempt = runningPid == 0 ? 0 : 1;
+  automaticObservedPid = runningPid;
+  automaticObservedAt = now;
+  nextAutomaticLaunch = now;
+}
+
+bool terminateServiceForAutomaticRecovery() {
+  disconnectIpc();
+  Result result = pmshellInitialize();
+  if (R_FAILED(result)) {
+    feedbackText = "Automatic recovery: pm:shell " + resultText(result);
+    return false;
+  }
+  result = pmshellTerminateProgram(SwitifyProgramId);
+  pmshellExit();
+  if (R_FAILED(result)) {
+    feedbackText = "Automatic recovery stop failed: " + resultText(result);
+    return false;
+  }
+
+  runningPid = 0;
+  automaticObservedPid = 0;
+  connectionState = ConnectionState::Dormant;
+  serviceText = "Restarting";
+  readyText = "Restarting after readiness timeout";
+  return true;
 }
 
 void maintainAutomaticStartup() {
@@ -281,11 +313,35 @@ void maintainAutomaticStartup() {
     automaticLaunchActive = false;
     return;
   }
-  // A launched process may legitimately need several seconds to initialize
-  // Spotify. Retry only if it disappears or the launch itself was rejected.
-  if (runningPid != 0) return;
-
   const auto now = std::chrono::steady_clock::now();
+  if (runningPid != 0) {
+    if (automaticObservedPid != runningPid) {
+      automaticObservedPid = runningPid;
+      automaticObservedAt = now;
+      if (automaticLaunchAttempt == 0) automaticLaunchAttempt = 1;
+      return;
+    }
+    if (automaticObservedAt.time_since_epoch().count() == 0)
+      automaticObservedAt = now;
+    if (now - automaticObservedAt < StartupReadinessTimeout) return;
+
+    const bool exhausted = automaticLaunchAttempt >= AutomaticLaunchAttempts;
+    if (!terminateServiceForAutomaticRecovery()) {
+      automaticLaunchActive = false;
+      serviceText = "Startup recovery failed";
+      return;
+    }
+    if (exhausted) {
+      automaticLaunchActive = false;
+      serviceText = "Startup failed";
+      feedbackText = "Readiness timed out after automatic retries";
+      return;
+    }
+    feedbackText = "Startup timed out; relaunching automatically";
+    nextAutomaticLaunch = now + StartupRelaunchDelay;
+    return;
+  }
+
   if (now < nextAutomaticLaunch) return;
   if (automaticLaunchAttempt >= AutomaticLaunchAttempts) {
     automaticLaunchActive = false;
@@ -295,7 +351,11 @@ void maintainAutomaticStartup() {
 
   ++automaticLaunchAttempt;
   launchService();
-  if (runningPid != 0) return;
+  if (runningPid != 0) {
+    automaticObservedPid = runningPid;
+    automaticObservedAt = now;
+    return;
+  }
 
   const std::string failure = feedbackText;
   if (automaticLaunchAttempt >= AutomaticLaunchAttempts) {
@@ -309,6 +369,8 @@ void maintainAutomaticStartup() {
 }
 
 void stopService() {
+  automaticLaunchActive = false;
+  automaticObservedPid = 0;
   disconnectIpc();
   if (!processIsRunning()) {
     runningPid = 0;
@@ -569,19 +631,20 @@ class PlayerElement final : public tsl::elm::Element {
                              : text));
     }
 
-    const s32 volumeLabelY = controlsY + 43;
+    const s32 volumePercentY = controlsY + 43;
     const s32 volumeBarX = x + 112;
     const s32 volumeBarY = controlsY + 66;
     const s32 volumeBarWidth = width - 138;
     const uint32_t volume = std::min(UINT32_C(1000),
                                      currentStatus.volume_permille);
-    renderer->drawString("Volume", false, x + 20, volumeLabelY, 16, text);
+    // Keep the label on the slider's row. Only the percentage belongs above.
+    renderer->drawString("Volume", false, x + 20, volumeBarY + 6, 16, text);
     const std::string volumeText = std::to_string(volume / 10) + "%";
     const auto [volumeTextWidth, volumeTextHeight] = renderer->drawString(
         volumeText, false, 0, 0, 16, tsl::style::color::ColorTransparent);
     (void)volumeTextHeight;
     renderer->drawString(volumeText, false, x + width - 20 - volumeTextWidth,
-                         volumeLabelY, 16, text);
+                         volumePercentY, 16, text);
     if (hasFocus() && focus == 6)
       renderer->drawRect(volumeBarX - 3, volumeBarY - 5,
                          volumeBarWidth + 6, 13, a({0x1, 0xD, 0x6, 0x7}));
@@ -1194,7 +1257,8 @@ class SwitifyOverlay final : public tsl::Overlay {
  public:
   void initServices() override {
     refreshServiceState(false);
-    if (runningPid == 0) {
+    if (connectionState != ConnectionState::Connected &&
+        connectionState != ConnectionState::Incompatible) {
       beginAutomaticStartup();
       maintainAutomaticStartup();
     }
