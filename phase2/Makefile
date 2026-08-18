@@ -1,5 +1,5 @@
 TITLE_ID := 4200000000535754
-VERSION := 0.4.3
+VERSION := 0.4.4
 
 .PHONY: all module overlay probe dist clean
 

@@ -34,6 +34,8 @@ class BackgroundBackend {
     Collection,
     PreviousPage,
     NextPage,
+    PreviousRemotePage,
+    NextRemotePage,
   };
   enum class BrowsePlayMode { Tracks, Playlist, Queue };
   enum class BrowseSection {
@@ -60,6 +62,11 @@ class BackgroundBackend {
     uint32_t depth = 0;
     BrowsePlayMode playMode = BrowsePlayMode::Tracks;
     size_t pageOffset = 0;
+    bool remotelyPaged = false;
+    bool remoteHasMore = false;
+    size_t remoteOffset = 0;
+    size_t remoteNextOffset = 0;
+    SpotifyEngine::Collection remoteCollection;
     std::vector<BrowseEntry> entries;
   };
 
@@ -72,6 +79,7 @@ class BackgroundBackend {
   void requestSearch(const std::string& query);
   void openBrowseItem(uint64_t generation, uint32_t index);
   void changeBrowsePage(size_t offset);
+  void changeRemoteBrowsePage(size_t offset);
   void backBrowse(uint64_t generation);
   void playBrowseItem(uint64_t generation, uint32_t index);
   void browseCurrentPlaylist(bool queue);
@@ -83,6 +91,9 @@ class BackgroundBackend {
   BrowsePage buildTracks(std::string title, std::string subtitle,
                          std::vector<SpotifyEngine::Track> tracks,
                          uint32_t depth) const;
+  BrowsePage buildRemoteTracks(const SpotifyEngine::Collection& collection,
+                               SpotifyEngine::TrackPage page,
+                               uint32_t depth) const;
 
   ServiceCore& core;
   SpotifyEngine& engine;

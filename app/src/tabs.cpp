@@ -1041,7 +1041,8 @@ LibraryTab::LibraryTab() : alive(std::make_shared<std::atomic_bool>(true)) {
   top->setAxis(brls::Axis::ROW);
   top->setAlignItems(brls::AlignItems::CENTER);
   top->setPadding(20, swui::kPagePadding, 12, swui::kPagePadding);
-  top->addView(makeHeading("Your Library", "Liked songs, playlists, and albums"));
+  top->addView(makeHeading(
+      "Your Library", "Liked songs, playlists, albums, and podcasts"));
   refreshButton = swui::makeActionButton(
       "Refresh",
       [this](brls::View*) {
@@ -1135,7 +1136,8 @@ void LibraryTab::load(bool forceRefresh) {
   loading = true;
   clearDynamicContent(content, refreshButton);
   content->addView(swui::makeStatePanel(
-      "Loading Your Library", "Fetching private playlists and saved albums."));
+      "Loading Your Library",
+      "Fetching private playlists, saved albums, and podcasts."));
   auto token = alive;
   SpotifyEngine::instance().fetchLibrary(
       [this, token, requestId](SpotifyEngine::Result<SpotifyEngine::LibraryData> result) mutable {
@@ -1168,12 +1170,17 @@ void LibraryTab::show(
   loaded = true;
   status->setText(std::to_string(result.value.playlists.size()) +
                   " collections  |  " +
-                  std::to_string(result.value.albums.size()) + " saved albums");
+                  std::to_string(result.value.albums.size()) +
+                  " albums  |  " +
+                  std::to_string(result.value.podcasts.size()) +
+                  " podcasts");
   addCollectionSection(content, "Playlists and Liked Songs",
                        "Everything you have saved or followed",
                        result.value.playlists);
   addCollectionSection(content, "Saved albums", "Your album library",
                        result.value.albums);
+  addCollectionSection(content, "Saved podcasts", "Shows you follow",
+                       result.value.podcasts);
 }
 
 // ---- Now Playing --------------------------------------------------------
@@ -1788,7 +1795,7 @@ SettingsTab::SettingsTab()
   aboutHeader->setMarginTop(16);
   content->addView(aboutHeader);
   content->addView(swui::makeStatePanel(
-      "Switify 0.6.3",
+      "Switify 0.6.4",
       "Created by HiroshiYamauchi\nA controller-first native Spotify client "
       "for Nintendo Switch homebrew."));
 
@@ -1796,7 +1803,7 @@ SettingsTab::SettingsTab()
       "About and credits",
       [](brls::View*) {
         showInformationPage(
-            "About Switify", "Version 0.6.3",
+            "About Switify", "Version 0.6.4",
             {{"Created by HiroshiYamauchi",
               "A controller-first native Spotify client for Nintendo Switch "
               "homebrew."},
@@ -1823,7 +1830,17 @@ SettingsTab::SettingsTab()
       [](brls::View*) {
         showInformationPage(
             "Changelog", "Complete Switify development history",
-            {{"Standalone 0.6.3 · playback modes",
+            {{"Standalone 0.6.4 · responsive collections",
+              "Loads Liked Songs and playlists in demand-driven 50-track "
+              "pages instead of blocking on up to 1,000 tracks. Added saved "
+              "podcasts through Spotify's native library data and removed "
+              "unused non-Vorbis decoders from the NRO."},
+             {"Overlay 0.4.4 · compatibility and paging",
+              "Reduced the resident service and artwork footprint, fixed "
+              "Nintendo 64 Nintendo Switch Online compatibility, added "
+              "bounded automatic startup retries, demand-loaded collection "
+              "pages, centered artwork, and a clear volume layout."},
+             {"Standalone 0.6.3 · playback modes",
               "Made Shuffle reorder the queue that is already playing. Moved "
               "Repeat All and Repeat One into the native queue/player path so "
               "all repeats are immediate, deterministic, and race-free."},

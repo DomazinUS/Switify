@@ -22,6 +22,7 @@ constexpr const char* ArtworkUrlTemporary =
     "/config/Switify/current-artwork-url.tmp";
 constexpr size_t MaxBrowseItems = 32;
 constexpr size_t BrowsePageSize = 25;
+constexpr size_t RemoteTrackPageSize = 50;
 
 std::string itemCountText(size_t count, const char* singular,
                           const char* plural) {
@@ -237,6 +238,23 @@ void BackgroundBackend::completeBrowse(uint64_t generation, BrowsePage page) {
       previous.sourceIndex =
           first > BrowsePageSize ? first - BrowsePageSize : 0;
       visibleBrowseEntries.push_back(std::move(previous));
+    } else if (currentBrowsePage.remotelyPaged &&
+               currentBrowsePage.remoteOffset > 0) {
+      BrowseEntry previous;
+      previous.type = BrowseEntryType::PreviousRemotePage;
+      previous.name = "Previous songs";
+      previous.subtitle = "Back to " +
+                          std::to_string(
+                              currentBrowsePage.remoteOffset >=
+                                      RemoteTrackPageSize
+                                  ? currentBrowsePage.remoteOffset -
+                                        RemoteTrackPageSize + 1
+                                  : 1);
+      previous.sourceIndex =
+          currentBrowsePage.remoteOffset >= RemoteTrackPageSize
+              ? currentBrowsePage.remoteOffset - RemoteTrackPageSize
+              : 0;
+      visibleBrowseEntries.push_back(std::move(previous));
     }
     for (size_t index = first; index < last; ++index) {
       visibleBrowseEntries.push_back(currentBrowsePage.entries[index]);
@@ -249,12 +267,28 @@ void BackgroundBackend::completeBrowse(uint64_t generation, BrowsePage page) {
       next.subtitle = "Continue at " + std::to_string(last + 1);
       next.sourceIndex = last;
       visibleBrowseEntries.push_back(std::move(next));
+    } else if (currentBrowsePage.remotelyPaged &&
+               currentBrowsePage.remoteHasMore) {
+      BrowseEntry next;
+      next.type = BrowseEntryType::NextRemotePage;
+      next.name = "Next songs";
+      next.subtitle = "Continue at " +
+                      std::to_string(currentBrowsePage.remoteNextOffset + 1);
+      next.sourceIndex = currentBrowsePage.remoteNextOffset;
+      visibleBrowseEntries.push_back(std::move(next));
     }
 
     title = currentBrowsePage.title;
     subtitle = currentBrowsePage.subtitle;
     depth = currentBrowsePage.depth;
-    if (currentBrowsePage.entries.size() > BrowsePageSize) {
+    if (currentBrowsePage.remotelyPaged &&
+        !currentBrowsePage.entries.empty()) {
+      subtitle = "Songs " +
+                 std::to_string(currentBrowsePage.remoteOffset + first + 1) +
+                 "-" +
+                 std::to_string(currentBrowsePage.remoteOffset + last);
+      if (currentBrowsePage.remoteHasMore) subtitle += "+";
+    } else if (currentBrowsePage.entries.size() > BrowsePageSize) {
       subtitle = std::string(isTrackPage ? "Songs " : "Items ") +
                  std::to_string(first + 1) + "-" +
                  std::to_string(last) + " of " +
@@ -271,6 +305,8 @@ void BackgroundBackend::completeBrowse(uint64_t generation, BrowsePage page) {
         case BrowseEntryType::Section:
         case BrowseEntryType::PreviousPage:
         case BrowseEntryType::NextPage:
+        case BrowseEntryType::PreviousRemotePage:
+        case BrowseEntryType::NextRemotePage:
           item.kind = SwitifyBrowseItemKind_Section;
           break;
         case BrowseEntryType::Track:
@@ -516,6 +552,19 @@ BackgroundBackend::BrowsePage BackgroundBackend::buildTracks(
   return page;
 }
 
+BackgroundBackend::BrowsePage BackgroundBackend::buildRemoteTracks(
+    const SpotifyEngine::Collection& collection,
+    SpotifyEngine::TrackPage tracks, uint32_t depth) const {
+  auto page = buildTracks(collection.name, collection.subtitle,
+                          std::move(tracks.tracks), depth);
+  page.remotelyPaged = true;
+  page.remoteHasMore = tracks.hasMore;
+  page.remoteOffset = tracks.offset;
+  page.remoteNextOffset = tracks.nextOffset;
+  page.remoteCollection = collection;
+  return page;
+}
+
 void BackgroundBackend::openBrowseItem(uint64_t generation,
                                         uint32_t index) {
   BrowseEntry entry;
@@ -531,6 +580,11 @@ void BackgroundBackend::openBrowseItem(uint64_t generation,
     changeBrowsePage(entry.sourceIndex);
     return;
   }
+  if (entry.type == BrowseEntryType::PreviousRemotePage ||
+      entry.type == BrowseEntryType::NextRemotePage) {
+    changeRemoteBrowsePage(entry.sourceIndex);
+    return;
+  }
   if (entry.type == BrowseEntryType::Track) {
     playBrowseItem(generation, index);
     return;
@@ -543,6 +597,21 @@ void BackgroundBackend::openBrowseItem(uint64_t generation,
 
   const uint64_t next = beginChild(entry.name, entry.subtitle);
   const uint32_t depth = core.browseHeader().depth;
+  if (entry.collection.kind == SpotifyEngine::Collection::Kind::LIKED ||
+      entry.collection.kind == SpotifyEngine::Collection::Kind::PLAYLIST) {
+    engine.fetchPlaylistTrackPage(
+        entry.collection, 0, RemoteTrackPageSize,
+        [this, next, depth, collection = entry.collection](
+            SpotifyEngine::Result<SpotifyEngine::TrackPage> result) {
+          if (!result.ok()) {
+            failBrowse(next, result.error);
+            return;
+          }
+          completeBrowse(next, buildRemoteTracks(
+                                   collection, std::move(result.value), depth));
+        });
+    return;
+  }
   engine.fetchPlaylistTracks(
       entry.collection,
       [this, next, depth, collection = entry.collection](
@@ -572,6 +641,40 @@ void BackgroundBackend::changeBrowsePage(size_t offset) {
     generation = activeBrowseGeneration;
   }
   completeBrowse(generation, std::move(page));
+}
+
+void BackgroundBackend::changeRemoteBrowsePage(size_t offset) {
+  SpotifyEngine::Collection collection;
+  std::string title;
+  std::string subtitle;
+  uint32_t depth = 0;
+  uint64_t generation = 0;
+  {
+    std::scoped_lock lock(browseMutex);
+    if (!currentBrowsePage.remotelyPaged ||
+        currentBrowsePage.remoteCollection.uri.empty())
+      return;
+    collection = currentBrowsePage.remoteCollection;
+    title = currentBrowsePage.title;
+    subtitle = currentBrowsePage.subtitle;
+    depth = static_cast<uint32_t>(browseHistory.size());
+    visibleBrowseEntries.clear();
+    activeBrowseGeneration =
+        core.beginBrowse(title, subtitle, depth, monotonicMs());
+    generation = activeBrowseGeneration;
+  }
+  engine.fetchPlaylistTrackPage(
+      collection, offset, RemoteTrackPageSize,
+      [this, generation, depth, collection = std::move(collection)](
+          SpotifyEngine::Result<SpotifyEngine::TrackPage> result) {
+        if (!result.ok()) {
+          failBrowse(generation, result.error);
+          return;
+        }
+        completeBrowse(generation, buildRemoteTracks(
+                                       collection, std::move(result.value),
+                                       depth));
+      });
 }
 
 void BackgroundBackend::backBrowse(uint64_t generation) {

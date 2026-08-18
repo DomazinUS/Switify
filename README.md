@@ -21,8 +21,8 @@ independently installed experiences:
 
 | Component | Current version | Purpose |
 | --- | ---: | --- |
-| **Switify NRO** | **0.6.3** | Full-screen Home, Search, Library, collection browsing, first-time login, and native playback. |
-| **Switify Overlay** | **0.4.3** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
+| **Switify NRO** | **0.6.4** | Full-screen Home, Search, Library, collection browsing, first-time login, and native playback. |
+| **Switify Overlay** | **0.4.4** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
 
 The two products do not share a process or live playback engine. They share
 only persistent authentication, settings, session metadata, and selected cache
@@ -76,14 +76,14 @@ then launch Switify.
 The [latest release](https://github.com/DomazinUS/Switify/releases/latest)
 contains:
 
-- `Switify-0.6.3.zip` — standalone full-screen application
-- `Switify-Overlay-0.4.3.zip` — Ultrahand overlay and dormant background service
-- `Switify-source-0.6.3.zip` — corresponding buildable source snapshot
+- `Switify-0.6.4.zip` — standalone full-screen application
+- `Switify-Overlay-0.4.4.zip` — Ultrahand overlay and dormant background service
+- `Switify-source-0.6.4.zip` — corresponding buildable source snapshot
 - `SHA256SUMS.txt` — SHA-256 checksums for all three archives
 
 ## Install the standalone app
 
-1. Download `Switify-0.6.3.zip` and extract it to the root of the SD card.
+1. Download `Switify-0.6.4.zip` and extract it to the root of the SD card.
 2. Confirm that the resulting file is
    `sdmc:/switch/Switify/Switify.nro`.
 3. Return the SD card to the console and launch Switify through title override.
@@ -116,7 +116,7 @@ Authenticate successfully in the NRO **before** installing or opening the
 overlay. The overlay intentionally has no separate login flow.
 
 1. Close the standalone NRO.
-2. Download `Switify-Overlay-0.4.3.zip` and extract it to the SD-card root.
+2. Download `Switify-Overlay-0.4.4.zip` and extract it to the SD-card root.
 3. Confirm these installed files:
 
        sdmc:/switch/.overlays/Switify.ovl
@@ -128,8 +128,9 @@ overlay. The overlay intentionally has no separate login flow.
    service automatically and then connects to it.
 
 There is deliberately no `boot2.flag`; the service does not start with the
-console. Stop the service from Switify before launching a known-incompatible
-title or before using the standalone NRO.
+console. The standalone NRO and background service are independent playback
+engines. They can coexist, but normally close one before using the other to
+avoid two overlapping Spotify streams.
 
 ## Updating
 
@@ -142,12 +143,9 @@ release archive.
 ## Known limitations
 
 - Spotify Premium is required.
-- **Nintendo 64 Nintendo Switch Online:** games currently hang while the
-  Switify background service is resident, even when playback is paused. Stop
-  the service before launching that application. The standalone NRO is not
-  affected after it has been closed.
 - The standalone NRO and background service are separate native Spotify/audio
-  engines and must not run simultaneously.
+  engines. Running both deliberately can produce two slightly offset audio
+  streams.
 - Switify streams audio and does not download Spotify music for offline use.
 - Switify depends on undocumented Spotify protocols that Spotify may change.
 

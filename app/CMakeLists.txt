@@ -23,7 +23,7 @@ endif ()
 
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "6")
-set(VERSION_ALTER "3")
+set(VERSION_ALTER "4")
 set(PROJECT_AUTHOR "HiroshiYamauchi")
 set(PROJECT_TITLEID "010ff000ffff0117")
 set(PACKAGE_NAME "app.switify")
@@ -36,10 +36,12 @@ set(BELL_DISABLE_SINKS     ON  CACHE BOOL "" FORCE)
 set(BELL_DISABLE_WEBSERVER ON  CACHE BOOL "" FORCE)
 set(BELL_DISABLE_MQTT      ON  CACHE BOOL "" FORCE)
 set(BELL_CODEC_VORBIS      ON  CACHE BOOL "" FORCE)
-set(BELL_CODEC_AAC         ON  CACHE BOOL "" FORCE)
-set(BELL_CODEC_MP3         ON  CACHE BOOL "" FORCE)
-set(BELL_CODEC_ALAC        ON  CACHE BOOL "" FORCE)
-set(BELL_CODEC_OPUS        ON  CACHE BOOL "" FORCE)
+# Switify explicitly requests Spotify's OGG Vorbis streams. Keeping unrelated
+# decoders resident only increases the NRO image and working set.
+set(BELL_CODEC_AAC         OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_MP3         OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_ALAC        OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_OPUS        OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../vendor/cspot ${CMAKE_BINARY_DIR}/cspot)
 
 # --- borealis

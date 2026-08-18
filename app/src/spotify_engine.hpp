@@ -119,6 +119,13 @@ class SpotifyEngine {
     uint64_t revision = 0;
   };
 
+  struct TrackPage {
+    std::vector<Track> tracks;
+    size_t offset = 0;
+    size_t nextOffset = 0;
+    bool hasMore = false;
+  };
+
   struct HomeData {
     Profile profile;
     std::vector<ResumeContext> resumeContexts;
@@ -133,6 +140,7 @@ class SpotifyEngine {
   struct LibraryData {
     std::vector<Collection> playlists;
     std::vector<Collection> albums;
+    std::vector<Collection> podcasts;
   };
 
   struct SearchResults {
@@ -201,6 +209,11 @@ class SpotifyEngine {
   void fetchPlaylistTracks(
       const Collection& collection,
       std::function<void(Result<std::vector<Track>>)> cb);
+  // Fetches one Spotify source page without waiting for the entire collection.
+  // Both Switch interfaces use this for responsive, incremental browsing.
+  void fetchPlaylistTrackPage(
+      const Collection& collection, size_t offset, size_t limit,
+      std::function<void(Result<TrackPage>)> cb);
   void search(const std::string& query,
               std::function<void(Result<SearchResults>)> cb);
   void setTrackSaved(const std::string& uri, bool saved,
@@ -254,6 +267,13 @@ class SpotifyEngine {
   std::unordered_map<std::string, std::vector<Track>> collectionTracksCache;
   std::deque<std::string> collectionTrackCacheOrder;
   size_t cachedCollectionTrackCount = 0;
+#ifndef SWITIFY_BACKGROUND_SERVICE
+  // Demand-loaded NRO pages have their own bounded cache; treating a partial
+  // page as a complete collection would corrupt Play All and pagination.
+  std::unordered_map<std::string, TrackPage> collectionTrackPageCache;
+  std::deque<std::string> collectionTrackPageCacheOrder;
+  size_t cachedCollectionPageTrackCount = 0;
+#endif
   std::unordered_map<std::string, bool> likedStateCache;
   std::unordered_set<std::string> likedStatePending;
   std::unordered_set<std::string> likedMutationPending;

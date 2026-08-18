@@ -18,12 +18,20 @@ class TrackListActivity : public brls::Activity {
 
  private:
   void showTracks(SpotifyEngine::Result<std::vector<SpotifyEngine::Track>> result);
+  void showTrackPage(SpotifyEngine::Result<SpotifyEngine::TrackPage> result,
+                     bool firstPage);
+  void requestNextTrackPage();
+  void updateTrackSummary();
   void appendTrackRows(bool focusFirstNew = false);
 
   SpotifyEngine::Collection collection;
   std::vector<SpotifyEngine::Track> currentTracks;
   size_t renderedTrackCount = 0;
   brls::Box* loadMoreButton = nullptr;
+  size_t remoteNextOffset = 0;
+  bool remotePagination = false;
+  bool remoteHasMore = false;
+  bool remoteLoadPending = false;
   std::shared_ptr<std::atomic_bool> alive;
 
   BRLS_BIND(brls::Image, artwork, "artwork");

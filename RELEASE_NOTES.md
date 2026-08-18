@@ -1,30 +1,40 @@
-# Switify 0.6.3 / Overlay 0.4.3
+# Switify 0.6.4 / Overlay 0.4.4
 
 Switify is a native, controller-first Spotify client for Nintendo Switch
 homebrew, created by **HiroshiYamauchi**.
 
 ## Download choices
 
-- `Switify-0.6.3.zip` — standalone full-screen NRO.
-- `Switify-Overlay-0.4.3.zip` — independent Ultrahand overlay plus dormant
+- `Switify-0.6.4.zip` — standalone full-screen NRO.
+- `Switify-Overlay-0.4.4.zip` — independent Ultrahand overlay plus dormant
   Atmosphère background service.
-- `Switify-source-0.6.3.zip` — complete corresponding source and vendored
+- `Switify-source-0.6.4.zip` — complete corresponding source and vendored
   dependencies for both builds.
 - `SHA256SUMS.txt` — checksums for all three archives.
 
 ## Installation
 
-For the standalone app, extract `Switify-0.6.3.zip` to the SD root and launch
+For the standalone app, extract `Switify-0.6.4.zip` to the SD root and launch
 Switify through title override. On first run, open Spotify on a phone connected
 to the same network and select **Switify** from the device picker.
 
 Install the overlay only after the NRO has authenticated successfully. Extract
-`Switify-Overlay-0.4.3.zip` to the SD root and reboot once. Opening the Switify
+`Switify-Overlay-0.4.4.zip` to the SD root and reboot once. Opening the Switify
 overlay starts its dormant background service automatically. The NRO and
-overlay are independent and should not run at the same time.
+overlay are independent; if both are deliberately left running, they maintain
+separate playback sessions and may produce two overlapping audio streams.
 
 ## Highlights
 
+- Liked Songs and playlists load in 50-track pages in both interfaces rather
+  than blocking while up to 1,000 tracks are downloaded and duplicated.
+- Saved podcasts use Spotify's native library data and now appear in Home and
+  Your Library.
+- The NRO and background service carry only the Vorbis decoder that Spotify
+  playback can select.
+- The optimized 3 MiB service, just-in-time artwork networking, and bounded
+  queues restore Nintendo 64 Nintendo Switch Online compatibility.
+- Automatic service startup now retries safely during slow Atmosphère launch.
 - Live Shuffle now reorders upcoming tracks without restarting the song that
   is currently audible.
 - Repeat All wraps the complete queue, while Repeat One restarts the current
@@ -46,13 +56,6 @@ overlay are independent and should not run at the same time.
   development-history pages.
 - Background playback with artwork, queue, seek, repeat, shuffle, and visible
   volume controls.
-
-## Important known issue
-
-Stop Switify's background service before launching Nintendo 64 Nintendo Switch
-Online. Games in that application currently hang while the service is resident,
-even when music is paused. The standalone NRO is unaffected because it closes
-before another title starts.
 
 Switify is unofficial, requires Spotify Premium for native playback, and is not
 affiliated with Spotify or Nintendo.

@@ -3,15 +3,34 @@
 All notable Switify changes are documented here. Standalone NRO and overlay
 versions are tracked independently because they are separate applications.
 
-## Unreleased overlay and background service
+## Standalone NRO 0.6.4 — 2026-08-18
+
+### Added
+
+- Saved shows now come from Spotify's native `libraryV3` data and appear in
+  both the Podcasts Home filter and a dedicated Saved podcasts Library row.
+- Liked Songs and playlists publish their first 50 tracks immediately, with
+  explicit demand-loaded pages for the rest.
+
+### Changed
+
+- Removed unused AAC, MP3, ALAC, and Opus decoder paths. Switify explicitly
+  requests Spotify's 160 or 320 kbps OGG Vorbis streams, so this reduces the
+  NRO image and working set without removing a selectable format.
+
+## Overlay and background service 0.4.4 — 2026-08-18
 
 ### Fixed
 
-- Bounded the background player's active queue to a 100-track window around
-  the selected item. Liked Songs and other large collections remain fully
-  paginated in the browser without multiplying up to 1,000 tracks across the
-  engine playlist, queue, cspot state, and persisted session until the fixed
-  sysmodule heap crashes.
+- Restored compatibility with Nintendo 64 Nintendo Switch Online by reducing
+  persistent heap, decoder, socket, and artwork resource pressure.
+- Liked Songs and playlists no longer wait for up to 1,000 serially fetched
+  tracks. The browser fetches 50 remotely paged tracks at a time and retains a
+  bounded 100-track playback window.
+- The overlay retries automatic service launch four times with bounded
+  backoff instead of requiring Retry automatic startup after a slow launch.
+- Centered decoded artwork within the player frame and moved the volume
+  percentage above its slider.
 
 ### Changed
 

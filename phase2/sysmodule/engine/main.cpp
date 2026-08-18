@@ -83,9 +83,9 @@ int main(int, char**) {
   nxlog::setQueueEnabled(false);
 #ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
   nxlog::push(
-      "Switify Phase 2 background engine 0.4.3-lite1 starting");
+      "Switify Phase 2 background engine 0.4.4-lite1 starting");
 #else
-  nxlog::push("Switify Phase 2 background engine 0.4.3 starting");
+  nxlog::push("Switify Phase 2 background engine 0.4.4 starting");
 #endif
   nxlog::push("Optimized profile: 3072 KiB heap, Vorbis-only decoder");
   nxlog::push(

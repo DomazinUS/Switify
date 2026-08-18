@@ -79,6 +79,8 @@ constexpr size_t BACKGROUND_PLAYBACK_HISTORY = 20;
 #else
 constexpr size_t MAX_CACHED_COLLECTIONS = 10;
 constexpr size_t MAX_CACHED_COLLECTION_TRACKS = 6000;
+constexpr size_t MAX_CACHED_COLLECTION_PAGES = 12;
+constexpr size_t MAX_CACHED_COLLECTION_PAGE_TRACKS = 600;
 #endif
 
 bool sameTrack(const SpotifyEngine::Track& left,
@@ -135,6 +137,13 @@ std::string collectionCacheKey(const SpotifyEngine::Collection& collection) {
   if (!collection.uri.empty()) return collection.uri;
   return std::to_string(static_cast<int>(collection.kind)) + ":" +
          collection.id + ":" + collection.name;
+}
+
+std::string collectionPageCacheKey(
+    const SpotifyEngine::Collection& collection, size_t offset,
+    size_t limit) {
+  return collectionCacheKey(collection) + "#" + std::to_string(offset) +
+         ":" + std::to_string(limit);
 }
 
 // Resolved from Spotify's current web-player bundles. The accompanying
@@ -840,6 +849,30 @@ std::vector<SpotifyEngine::HomeShelf> parseHomeShelves(const Json& payload) {
 void appendWarning(std::string& warnings, const std::string& text) {
   if (!warnings.empty()) warnings += "  |  ";
   warnings += text;
+}
+
+Json libraryRequestVariables(const char* filter, size_t limit) {
+  return Json{{"filters", Json::array({filter})},
+              {"order", nullptr},
+              {"textFilter", ""},
+              {"features", Json::array({"LIKED_SONGS", "YOUR_EPISODES"})},
+              {"limit", limit},
+              {"offset", 0},
+              {"flatten", false},
+              {"expandedFolders", Json::array()},
+              {"folderUri", nullptr},
+              {"includeFoldersWhenFlattening", true},
+              {"withCuration", false}};
+}
+
+void appendSavedPodcasts(const Json& json,
+                         std::vector<SpotifyEngine::Collection>& output) {
+  appendPartnerItems(
+      jsonPath(json, {"data", "me", "libraryV3"}), output,
+      [](const Json& item) {
+        return parsePartnerCollection(
+            item, SpotifyEngine::Collection::Kind::SHOW);
+      });
 }
 
 using WebHeaders = std::vector<std::pair<std::string, std::string>>;
@@ -1552,6 +1585,11 @@ bool SpotifyEngine::forgetCredentials() {
     collectionTracksCache.clear();
     collectionTrackCacheOrder.clear();
     cachedCollectionTrackCount = 0;
+#ifndef SWITIFY_BACKGROUND_SERVICE
+    collectionTrackPageCache.clear();
+    collectionTrackPageCacheOrder.clear();
+    cachedCollectionPageTrackCount = 0;
+#endif
     activeSourceName.clear();
     activePlaylist.clear();
     activePlaylistIndex = 0;
@@ -2404,19 +2442,8 @@ void SpotifyEngine::fetchDashboard(
 #endif
 
     try {
-      const Json variables = {
-          {"filters", Json::array({"Playlists"})},
-          {"order", nullptr},
-          {"textFilter", ""},
-          {"features", Json::array({"LIKED_SONGS", "YOUR_EPISODES"})},
-          {"limit", 10},
-          {"offset", 0},
-          {"flatten", false},
-          {"expandedFolders", Json::array()},
-          {"folderUri", nullptr},
-          {"includeFoldersWhenFlattening", true},
-          {"withCuration", false}};
-      const auto json = Json::parse(partnerRequest("libraryV3", variables.dump()));
+      const auto json = Json::parse(partnerRequest(
+          "libraryV3", libraryRequestVariables("Playlists", 10).dump()));
       appendPartnerItems(
           jsonPath(json, {"data", "me", "libraryV3"}),
           result.value.playlists, [](const Json& item) {
@@ -2429,25 +2456,38 @@ void SpotifyEngine::fetchDashboard(
     }
 
 #ifndef SWITIFY_BACKGROUND_SERVICE
+    bool podcastLibraryLoaded = false;
+    std::string podcastLibraryError;
     try {
-      const auto savedShows =
-          Json::parse(apiRequest("GET", "/v1/me/shows?limit=12&offset=0"));
-      const auto items = savedShows.find("items");
-      if (items != savedShows.end() && items->is_array()) {
-        std::unordered_set<std::string> seen;
-        for (const auto& wrapper : *items) {
-          const Json* show = &wrapper;
-          const auto nested = wrapper.find("show");
-          if (nested != wrapper.end()) show = &*nested;
-          auto collection = parseShow(*show);
-          if (!collection.uri.empty() && seen.insert(collection.uri).second)
-            result.value.podcasts.push_back(std::move(collection));
-        }
-      }
-      ++successfulSections;
+      appendSavedPodcasts(
+          Json::parse(partnerRequest(
+              "libraryV3",
+              libraryRequestVariables("Podcasts", 50).dump())),
+          result.value.podcasts);
+      podcastLibraryLoaded = true;
     } catch (const std::exception& error) {
+      podcastLibraryError = error.what();
+    }
+    // Spotify has used both labels in library payloads. Only pay for this
+    // best-effort compatibility request when the primary native-library
+    // filter is empty; never turn a valid empty library into a warning.
+    if (result.value.podcasts.empty()) {
+      try {
+        appendSavedPodcasts(
+            Json::parse(partnerRequest(
+                "libraryV3",
+                libraryRequestVariables("Shows", 50).dump())),
+            result.value.podcasts);
+        podcastLibraryLoaded = true;
+      } catch (const std::exception& error) {
+        if (podcastLibraryError.empty()) podcastLibraryError = error.what();
+      }
+    }
+    if (podcastLibraryLoaded) {
+      ++successfulSections;
+    } else {
       appendWarning(result.value.warning,
-                    "Podcasts: " + std::string(error.what()));
+                    "Podcasts: " + podcastLibraryError);
     }
 
     const struct {
@@ -2547,22 +2587,12 @@ void SpotifyEngine::fetchLibrary(
 
     int successfulSections = 0;
     std::string errors;
-    const auto libraryVariables = [](const char* filter) {
-      return Json{{"filters", Json::array({filter})},
-                  {"order", nullptr},
-                  {"textFilter", ""},
-                  {"features", Json::array({"LIKED_SONGS", "YOUR_EPISODES"})},
-                  {"limit", 50},
-                  {"offset", 0},
-                  {"flatten", false},
-                  {"expandedFolders", Json::array()},
-                  {"folderUri", nullptr},
-                  {"includeFoldersWhenFlattening", true},
-                  {"withCuration", false}};
-    };
+    bool podcastLibraryLoaded = false;
+    std::string podcastLibraryError;
     try {
       const auto playlists = Json::parse(
-          partnerRequest("libraryV3", libraryVariables("Playlists").dump()));
+          partnerRequest("libraryV3",
+                         libraryRequestVariables("Playlists", 50).dump()));
       appendPartnerItems(
           jsonPath(playlists, {"data", "me", "libraryV3"}),
           result.value.playlists, [](const Json& item) {
@@ -2575,7 +2605,8 @@ void SpotifyEngine::fetchLibrary(
 #ifndef SWITIFY_BACKGROUND_SERVICE
     try {
       const auto albums = Json::parse(
-          partnerRequest("libraryV3", libraryVariables("Albums").dump()));
+          partnerRequest("libraryV3",
+                         libraryRequestVariables("Albums", 50).dump()));
       appendPartnerItems(
           jsonPath(albums, {"data", "me", "libraryV3"}),
           result.value.albums, [](const Json& item) {
@@ -2585,17 +2616,196 @@ void SpotifyEngine::fetchLibrary(
     } catch (const std::exception& error) {
       appendWarning(errors, "Albums: " + std::string(error.what()));
     }
+    try {
+      appendSavedPodcasts(
+          Json::parse(partnerRequest(
+              "libraryV3",
+              libraryRequestVariables("Podcasts", 50).dump())),
+          result.value.podcasts);
+      podcastLibraryLoaded = true;
+    } catch (const std::exception& error) {
+      podcastLibraryError = error.what();
+    }
+    if (result.value.podcasts.empty()) {
+      try {
+        appendSavedPodcasts(
+            Json::parse(partnerRequest(
+                "libraryV3",
+                libraryRequestVariables("Shows", 50).dump())),
+            result.value.podcasts);
+        podcastLibraryLoaded = true;
+      } catch (const std::exception& error) {
+        if (podcastLibraryError.empty()) podcastLibraryError = error.what();
+      }
+    }
+    if (podcastLibraryLoaded) {
+      ++successfulSections;
+    } else {
+      appendWarning(errors, "Podcasts: " + podcastLibraryError);
+    }
 #endif
     if (successfulSections == 0) result.error = errors;
-    nxlog::pushf("Library: %d collections, %d albums%s%s",
+    nxlog::pushf("Library: %d collections, %d albums, %d podcasts%s%s",
                  static_cast<int>(result.value.playlists.size()),
                  static_cast<int>(result.value.albums.size()),
+                 static_cast<int>(result.value.podcasts.size()),
                  errors.empty() ? "" : " | ", errors.c_str());
     if (result.error.empty()) {
       std::lock_guard<std::mutex> lock(dataMutex);
       libraryCache = result.value;
       hasLibraryCache = true;
     }
+    cb(std::move(result));
+  });
+}
+
+void SpotifyEngine::fetchPlaylistTrackPage(
+    const Collection& collection, size_t offset, size_t limit,
+    std::function<void(Result<TrackPage>)> cb) {
+  limit = std::clamp<size_t>(limit, 1, 50);
+
+#ifndef SWITIFY_BACKGROUND_SERVICE
+  const std::string pageCacheKey =
+      collectionPageCacheKey(collection, offset, limit);
+  TrackPage cachedPage;
+  bool hasCachedPage = false;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    const auto cached = collectionTrackPageCache.find(pageCacheKey);
+    if (cached != collectionTrackPageCache.end()) {
+      cachedPage = cached->second;
+      hasCachedPage = true;
+      const auto order = std::find(collectionTrackPageCacheOrder.begin(),
+                                   collectionTrackPageCacheOrder.end(),
+                                   pageCacheKey);
+      if (order != collectionTrackPageCacheOrder.end())
+        collectionTrackPageCacheOrder.erase(order);
+      collectionTrackPageCacheOrder.push_back(pageCacheKey);
+    }
+  }
+  if (hasCachedPage) {
+    nxlog::pushf("Collection page cache hit: %s @ %u",
+                 collection.name.c_str(), static_cast<unsigned>(offset));
+    launchWorker([cb = std::move(cb),
+                  cachedPage = std::move(cachedPage)]() mutable {
+      Result<TrackPage> result;
+      result.value = std::move(cachedPage);
+      cb(std::move(result));
+    });
+    return;
+  }
+#endif
+
+  if (collection.kind != Collection::Kind::LIKED &&
+      collection.kind != Collection::Kind::PLAYLIST) {
+    fetchPlaylistTracks(
+        collection,
+        [offset, limit, cb = std::move(cb)](
+            Result<std::vector<Track>> complete) mutable {
+          Result<TrackPage> result;
+          if (!complete.ok()) {
+            result.error = std::move(complete.error);
+          } else {
+            result.value.offset = offset;
+            const size_t first = std::min(offset, complete.value.size());
+            const size_t last =
+                std::min(complete.value.size(), first + limit);
+            result.value.tracks.insert(
+                result.value.tracks.end(),
+                std::make_move_iterator(
+                    complete.value.begin() +
+                    static_cast<std::ptrdiff_t>(first)),
+                std::make_move_iterator(
+                    complete.value.begin() +
+                    static_cast<std::ptrdiff_t>(last)));
+            result.value.nextOffset = last;
+            result.value.hasMore = last < complete.value.size();
+          }
+          cb(std::move(result));
+        });
+    return;
+  }
+
+  launchWorker([this, collection, offset, limit,
+#ifndef SWITIFY_BACKGROUND_SERVICE
+                pageCacheKey,
+#endif
+                cb = std::move(cb)] {
+    Result<TrackPage> result;
+    result.value.offset = offset;
+    if (currentState != State::Ready) {
+      result.error = "Spotify is still connecting";
+      cb(std::move(result));
+      return;
+    }
+
+    try {
+      std::unordered_set<std::string> seen;
+      size_t sourceCount = 0;
+      if (collection.kind == Collection::Kind::LIKED) {
+        const Json variables = {
+            {"uri", "spotify:collection:tracks"},
+            {"offset", offset},
+            {"limit", limit}};
+        const auto json = Json::parse(
+            partnerRequest("fetchLibraryTracks", variables.dump()));
+        sourceCount = appendPartnerTrackPage(
+            jsonPath(json, {"data", "me", "library", "tracks"}),
+            result.value.tracks, seen);
+      } else {
+        const Json variables = {
+            {"uri", "spotify:playlist:" + collection.id},
+            {"offset", offset},
+            {"limit", limit},
+            {"enableWatchFeedEntrypoint", false}};
+        const auto json =
+            Json::parse(partnerRequest("fetchPlaylist", variables.dump()));
+        sourceCount = appendPartnerTrackPage(
+            jsonPath(json, {"data", "playlistV2", "content"}),
+            result.value.tracks, seen);
+      }
+      result.value.nextOffset = offset + sourceCount;
+      result.value.hasMore = sourceCount == limit;
+      nxlog::pushf("Collection page \"%s\": source %u-%u, %u tracks%s",
+                   collection.name.c_str(), static_cast<unsigned>(offset + 1),
+                   static_cast<unsigned>(result.value.nextOffset),
+                   static_cast<unsigned>(result.value.tracks.size()),
+                   result.value.hasMore ? ", more available" : "");
+    } catch (const std::exception& error) {
+      result.error = error.what();
+      nxlog::pushf("Collection page fetch failed: %s", error.what());
+    }
+#ifndef SWITIFY_BACKGROUND_SERVICE
+    if (result.ok()) {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      const auto existing = collectionTrackPageCache.find(pageCacheKey);
+      if (existing != collectionTrackPageCache.end()) {
+        cachedCollectionPageTrackCount -= existing->second.tracks.size();
+        collectionTrackPageCache.erase(existing);
+      }
+      const auto oldOrder = std::find(collectionTrackPageCacheOrder.begin(),
+                                      collectionTrackPageCacheOrder.end(),
+                                      pageCacheKey);
+      if (oldOrder != collectionTrackPageCacheOrder.end())
+        collectionTrackPageCacheOrder.erase(oldOrder);
+      while (!collectionTrackPageCacheOrder.empty() &&
+             (collectionTrackPageCache.size() >=
+                  MAX_CACHED_COLLECTION_PAGES ||
+              cachedCollectionPageTrackCount + result.value.tracks.size() >
+                  MAX_CACHED_COLLECTION_PAGE_TRACKS)) {
+        const std::string oldest = collectionTrackPageCacheOrder.front();
+        collectionTrackPageCacheOrder.pop_front();
+        const auto stale = collectionTrackPageCache.find(oldest);
+        if (stale != collectionTrackPageCache.end()) {
+          cachedCollectionPageTrackCount -= stale->second.tracks.size();
+          collectionTrackPageCache.erase(stale);
+        }
+      }
+      cachedCollectionPageTrackCount += result.value.tracks.size();
+      collectionTrackPageCache.emplace(pageCacheKey, result.value);
+      collectionTrackPageCacheOrder.push_back(pageCacheKey);
+    }
+#endif
     cb(std::move(result));
   });
 }
@@ -2660,7 +2870,7 @@ void SpotifyEngine::fetchPlaylistTracks(
         }
       } else {
         constexpr int PageSize = 50;
-        // Keep the collection bounded for the Switch's fixed 4 MiB
+        // Keep the collection bounded for the Switch's fixed-size
         // background-service heap while still supporting substantially larger
         // libraries than Spotify's first 50-item response.
         constexpr int MaximumCollectionTracks = 1000;
@@ -2943,6 +3153,23 @@ void SpotifyEngine::setTrackSaved(const std::string& uri, bool saved,
           if (order != collectionTrackCacheOrder.end())
             collectionTrackCacheOrder.erase(order);
         }
+#ifndef SWITIFY_BACKGROUND_SERVICE
+        for (auto it = collectionTrackPageCache.begin();
+             it != collectionTrackPageCache.end();) {
+          if (it->first.rfind(likedKey + "#", 0) == 0) {
+            cachedCollectionPageTrackCount -= it->second.tracks.size();
+            const std::string staleKey = it->first;
+            it = collectionTrackPageCache.erase(it);
+            const auto order = std::find(collectionTrackPageCacheOrder.begin(),
+                                         collectionTrackPageCacheOrder.end(),
+                                         staleKey);
+            if (order != collectionTrackPageCacheOrder.end())
+              collectionTrackPageCacheOrder.erase(order);
+          } else {
+            ++it;
+          }
+        }
+#endif
       }
       result.value = saved;
       notifyUpdate();

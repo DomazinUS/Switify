@@ -25,7 +25,7 @@ background service then operate independently. If credentials are missing, the
 background service reports that the user must open the NRO and sign in; it does
 not expose a second pairing flow.
 
-## Current milestone: release 0.4.3
+## Current milestone: release 0.4.4
 
 Version 0.3.5 is withdrawn. Its experimental resource reductions caused missing
 audio, indefinitely loading playlist views, and an overlay navigation trap on
@@ -35,8 +35,8 @@ audout until the first PCM frame. Hardware testing showed that neither change
 fixed Nintendo 64 Nintendo Switch Online. Version 0.3.8 reduced the remaining
 network footprint to Streamfin's two-session TCP-only background socket
 profile, but hardware testing confirmed that N64 games still hang whenever the
-Switify service is resident, even while playback is paused. This is a known,
-unresolved compatibility issue; the service remains opt-in and dormant at boot.
+Switify service is resident, even while playback is paused. The service remains
+opt-in and dormant at boot.
 Version 0.3.9 moves forward with user-facing controls while retaining the 0.3.8
 resource profile. Version 0.4.0 keeps that hardware-tested runtime profile,
 updates shared browse/search support, and establishes the public release
@@ -44,9 +44,11 @@ metadata and packaging baseline. Version 0.4.1 corrects the shared catalog
 search transport without changing playback, IPC, memory, socket, or audio
 behavior. Version 0.4.2 adds persistent shared volume and Normal/High streaming
 quality, improves conversion and buffering, and adopts smaller browse/artwork
-caches for a lighter overlay-service profile. Version 0.4.3 makes Shuffle
-reorder the active native queue and moves Repeat All/Repeat One into the queue
-EOF path, eliminating the old delayed restart race.
+caches for a lighter overlay-service profile. Version 0.4.3 corrects live
+Shuffle and repeat behavior. Version 0.4.4 applies the proven lite resource
+profile to the artwork build, makes artwork networking just-in-time, remotely
+paginates large collections, and restores Nintendo 64 Nintendo Switch Online
+compatibility in hardware testing.
 
 Implemented:
 
@@ -69,8 +71,9 @@ Implemented:
 - asynchronous IPC browsing for Home, Search, Your Library, collections, and
   tracks. Home exposes Jump Back In, Recently Played, Top Tracks, playlists,
   and Spotify's personalized shelves;
-- deduplicated multi-request collection loading and 25-song overlay pages,
-  so Liked Songs and large playlists are no longer truncated to the first 50;
+- demand-loaded 50-track Spotify collection pages presented as 25-song overlay
+  pages, so Liked Songs remain complete without downloading up to 1,000 tracks
+  before the first page appears;
 - the complete libnx exception-path syscall capability set, preventing a
   service fault or interruption from escalating into a nested Mesosphere
   kernel panic;
@@ -122,7 +125,7 @@ Outputs:
     phase2\build_engine\switify-background.nsp
     phase2\dist_engine\atmosphere\contents\4200000000535754\exefs.nsp
     phase2\dist_engine\switch\.overlays\Switify.ovl
-    phase2\Switify-Phase2-engine-0.4.3.zip
+    phase2\Switify-Phase2-engine-0.4.4.zip
 
 The installed sysmodule is dormant. There is deliberately no `boot2.flag`, so
 Atmosphere will not start it during boot. Opening the overlay launches it once
@@ -132,7 +135,7 @@ If launch fails, the next reboot starts normally with Switify inactive.
 ### Hardware checkpoint order
 
 1. Stop any currently running Switify background service from the old overlay.
-2. Extract `Switify-Phase2-engine-0.4.3.zip` to the SD root and reboot once so
+2. Extract `Switify-Phase2-engine-0.4.4.zip` to the SD root and reboot once so
    Atmosphere discovers the replaced ExeFS. The service remains dormant because
    the package contains no `boot2.flag`.
 3. Open `Switify` in Ultrahand. The background service starts automatically;
@@ -141,12 +144,10 @@ If launch fails, the next reboot starts normally with Switify inactive.
    is pressed. Then verify audio, open a playlist, and confirm B can always
    leave a Loading view. Collection and network requests never execute on
    Ultrahand's render thread.
-5. Do not run the standalone NRO at the same time as the background service;
-   each owns an independent cspot/audout engine.
-6. After the recovery checks pass, launch an N64 game once while Switify is
-   restored-paused, then once while it is actively playing. If it hangs and
-   force-closing is the only way to recover the console, close it and preserve
-   Switify's current and previous background logs afterward.
+5. The standalone NRO and service own independent cspot/audout engines. They
+   can coexist, but close one unless overlapping playback is intentional.
+6. As a resource-compatibility regression check, launch an N64 game once while
+   Switify is restored-paused, then once while it is actively playing.
 
 ## Boundary rules
 

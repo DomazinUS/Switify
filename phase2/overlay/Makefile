@@ -15,12 +15,12 @@ SOURCES     := source ../ipc-client/source
 INCLUDES    := ../ipc-client/include ../common/include
 APP_TITLE   := Switify
 APP_AUTHOR  := HiroshiYamauchi
-APP_VERSION := 0.4.3
+APP_VERSION := 0.4.4
 NO_ICON     := 1
 
 ifeq ($(LIGHTWEIGHT),1)
 APP_TITLE   := Switify Lite
-APP_VERSION := 0.4.3-lite1
+APP_VERSION := 0.4.4-lite1
 DEFINES     += -DSWITIFY_LIGHTWEIGHT_OVERLAY=1
 endif
 

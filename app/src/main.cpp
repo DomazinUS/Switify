@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
     nxlog::push("NetLoader launch detected; connecting live log channel");
     nxlinkSocket = nxlinkStdio();
   }
-  nxlog::pushf("Switify 0.6.3 starting (nxlink live logs: %s)",
+  nxlog::pushf("Switify 0.6.4 starting (nxlink live logs: %s)",
                nxlinkSocket >= 0 ? "connected" : "off");
 #endif
 

@@ -20,9 +20,9 @@
 namespace {
 
 #ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
-constexpr const char* OverlayVersion = "v0.4.3-lite1";
+constexpr const char* OverlayVersion = "v0.4.4-lite1";
 #else
-constexpr const char* OverlayVersion = "v0.4.3";
+constexpr const char* OverlayVersion = "v0.4.4";
 #endif
 
 constexpr uint64_t SwitifyProgramId = UINT64_C(0x4200000000535754);
@@ -32,6 +32,7 @@ constexpr const char* ArtworkUrlPath =
     "sdmc:/config/Switify/current-artwork-url";
 constexpr auto RefreshInterval = std::chrono::milliseconds(500);
 constexpr auto BrowseRefreshInterval = std::chrono::milliseconds(200);
+constexpr unsigned AutomaticLaunchAttempts = 4;
 
 enum class ConnectionState {
   Dormant,
@@ -49,6 +50,9 @@ uint64_t connectedPid = 0;
 std::string serviceText = "Dormant";
 std::string feedbackText = "Starts automatically with Switify";
 std::string readyText = "Not started";
+bool automaticLaunchActive = false;
+unsigned automaticLaunchAttempt = 0;
+std::chrono::steady_clock::time_point nextAutomaticLaunch{};
 
 std::string readLastLine(const char* path, const char* unavailable) {
   FILE* file = std::fopen(path, "r");
@@ -265,6 +269,45 @@ void launchService() {
   readyText = "Waiting for readiness check";
 }
 
+void beginAutomaticStartup() {
+  automaticLaunchActive = true;
+  automaticLaunchAttempt = 0;
+  nextAutomaticLaunch = std::chrono::steady_clock::now();
+}
+
+void maintainAutomaticStartup() {
+  if (!automaticLaunchActive) return;
+  if (connectionState == ConnectionState::Connected) {
+    automaticLaunchActive = false;
+    return;
+  }
+  // A launched process may legitimately need several seconds to initialize
+  // Spotify. Retry only if it disappears or the launch itself was rejected.
+  if (runningPid != 0) return;
+
+  const auto now = std::chrono::steady_clock::now();
+  if (now < nextAutomaticLaunch) return;
+  if (automaticLaunchAttempt >= AutomaticLaunchAttempts) {
+    automaticLaunchActive = false;
+    feedbackText = "Automatic startup failed; open Settings to retry";
+    return;
+  }
+
+  ++automaticLaunchAttempt;
+  launchService();
+  if (runningPid != 0) return;
+
+  const std::string failure = feedbackText;
+  if (automaticLaunchAttempt >= AutomaticLaunchAttempts) {
+    automaticLaunchActive = false;
+    feedbackText = failure + "; automatic retries exhausted";
+    return;
+  }
+  const unsigned delaySeconds = 1U << (automaticLaunchAttempt - 1);
+  nextAutomaticLaunch = now + std::chrono::seconds(delaySeconds);
+  feedbackText = failure + "; retrying automatically";
+}
+
 void stopService() {
   disconnectIpc();
   if (!processIsRunning()) {
@@ -454,8 +497,9 @@ class PlayerElement final : public tsl::elm::Element {
     int artHeight = 0;
     switify::artwork::borrow(&pixels, &artWidth, &artHeight);
     if (pixels && artWidth > 0 && artHeight > 0) {
-      renderer->drawBitmap(center - artWidth / 2, artY, artWidth, artHeight,
-                           pixels);
+      const s32 decodedX = artX + (ArtSize - artWidth) / 2;
+      const s32 decodedY = artY + (ArtSize - artHeight) / 2;
+      renderer->drawBitmap(decodedX, decodedY, artWidth, artHeight, pixels);
     } else {
       renderer->drawRect(artX, artY, ArtSize, ArtSize,
                          a({0x1, 0x2, 0x2, 0xF}));
@@ -525,9 +569,9 @@ class PlayerElement final : public tsl::elm::Element {
                              : text));
     }
 
-    const s32 volumeLabelY = controlsY + 45;
+    const s32 volumeLabelY = controlsY + 43;
     const s32 volumeBarX = x + 112;
-    const s32 volumeBarY = controlsY + 40;
+    const s32 volumeBarY = controlsY + 66;
     const s32 volumeBarWidth = width - 138;
     const uint32_t volume = std::min(UINT32_C(1000),
                                      currentStatus.volume_permille);
@@ -978,7 +1022,8 @@ class ServiceGui final : public tsl::Gui {
     list->addItem(serviceItem);
     list->addItem(feedbackItem);
     retryItem = actionItem("Retry automatic startup", "A", [this] {
-      launchService();
+      beginAutomaticStartup();
+      maintainAutomaticStartup();
       sync();
     });
     stopItem = actionItem("Stop background playback", "A", [this] {
@@ -1029,6 +1074,7 @@ class ServiceGui final : public tsl::Gui {
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);
+    maintainAutomaticStartup();
     sync();
     nextRefresh = now + RefreshInterval;
   }
@@ -1082,6 +1128,7 @@ class NowPlayingGui final : public tsl::Gui {
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);
+    maintainAutomaticStartup();
     if (player) player->sync();
     nextRefresh = now + RefreshInterval;
   }
@@ -1131,6 +1178,7 @@ class MainGui final : public tsl::Gui {
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);
+    maintainAutomaticStartup();
     if (player) player->sync();
     if (settingsItem) settingsItem->setValue(serviceText);
     nextRefresh = now + RefreshInterval;
@@ -1146,7 +1194,10 @@ class SwitifyOverlay final : public tsl::Overlay {
  public:
   void initServices() override {
     refreshServiceState(false);
-    if (runningPid == 0) launchService();
+    if (runningPid == 0) {
+      beginAutomaticStartup();
+      maintainAutomaticStartup();
+    }
   }
 
   void exitServices() override {
