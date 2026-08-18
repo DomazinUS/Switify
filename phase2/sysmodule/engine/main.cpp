@@ -47,15 +47,11 @@ uint32_t __nx_applet_type = AppletType_None;
 uint32_t __nx_fs_num_sessions = 2;
 
 void __libnx_initheap(void) {
-  // Recovery profile: retain the last hardware-proven ceiling. Compatibility
-  // reductions must be reintroduced one at a time after runtime measurement.
-#ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
-  // Hardware logs peak around a 2.2 MiB arena.  Three MiB retains meaningful
-  // headroom while reducing the process image reservation by one MiB.
+  // Hardware logs peak around a 2.2 MiB arena. Three MiB retains meaningful
+  // headroom while reducing the process image reservation by one MiB. Large
+  // collection playback is separately windowed, so it can no longer multiply
+  // a thousand-track library across every engine queue.
   static char heap[3 * 1024 * 1024];
-#else
-  static char heap[4 * 1024 * 1024];
-#endif
   extern char* fake_heap_start;
   extern char* fake_heap_end;
   fake_heap_start = heap;
@@ -88,10 +84,10 @@ int main(int, char**) {
 #ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
   nxlog::push(
       "Switify Phase 2 background engine 0.4.3-lite1 starting");
-  nxlog::push("Lightweight profile: 3072 KiB heap, Vorbis-only decoder");
 #else
   nxlog::push("Switify Phase 2 background engine 0.4.3 starting");
 #endif
+  nxlog::push("Optimized profile: 3072 KiB heap, Vorbis-only decoder");
   nxlog::push(
       "Compatibility profile: Applet pool, lazy audout, 2 BSD sessions");
   nxlog::push("Network profile: TCP-only; UDP disabled");

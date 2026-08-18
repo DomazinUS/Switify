@@ -76,9 +76,12 @@ Implemented:
   kernel panic;
 - bounded exponential backoff for Spotify access-token refresh failures, so a
   temporary DNS outage cannot create a 100 ms retry and log storm;
-- the hardware-proven 4 MiB fixed heap and four audout buffers, with 48 decoded
-  PCM chunks and smaller, non-duplicating Home, Library, playlist, and queue
-  caches;
+- a 3 MiB fixed heap and Vorbis-only decoder image, with four audout buffers,
+  48 decoded PCM chunks, and smaller, non-duplicating Home, Library, playlist,
+  and queue caches;
+- a 100-track background playback window around the selected item, retaining
+  full paginated browsing for Liked Songs without copying a thousand-track
+  library into every native playback layer;
 - a local B-button fail-safe: B immediately leaves a Loading view without
   waiting for service IPC, so a sick request cannot trap Ultrahand;
 - paused session restoration: the last track, playlist, and position are shown
@@ -88,6 +91,9 @@ Implemented:
 - lazy audout acquisition: connecting and browsing do not open audio output.
 - two long-lived BSD sessions instead of six, with unused UDP buffers disabled,
   leaving Nintendo online applications access to the shared networking service;
+- just-in-time overlay artwork networking: disk-cached JPEGs use no extra BSD
+  session, while a cache miss holds one only for the transfer and retains just
+  the decoded cover needed by the renderer;
 - a visible, focusable volume slider on the main player card, with a numeric
   percentage, 5% controller steps, and a value persistent across sessions;
 - three repeat modes (Off, All, and One) exposed by the overlay player;
@@ -100,7 +106,7 @@ The production candidate wraps the proven standalone `SpotifyEngine` behind
 the mailbox. It reuses `/config/Switify/credentials.json` and
 `playback-session.json`, reconnects in the background, publishes live metadata,
 and owns audout. Interactive phone pairing remains exclusively in the NRO. Its
-current loaded image is about 6.45 MiB including a fixed 4 MiB heap. Heap use is
+current loaded image is about 5.45 MiB including a fixed 3 MiB heap. Heap use is
 recorded at startup, after initialization, after a browse play request, and
 every 30 seconds. Background logs rotate at 512 KB:
 

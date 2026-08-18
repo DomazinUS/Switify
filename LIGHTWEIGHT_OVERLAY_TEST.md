@@ -7,17 +7,18 @@ data and it is not a replacement for the public 0.4.3 release yet.
 
 ## Resource reductions
 
-- The overlay no longer starts artwork networking before the background
-  process.
+- Both builds use the same optimized background service: a 3 MiB heap,
+  Vorbis-only decoding, bounded large-collection playback, two BSD sessions,
+  TCP-only networking, and lazy audout.
+- The normal overlay retains cover art but starts it only after the service is
+  ready. Cached JPEGs use no artwork network session; a cache miss claims one
+  session only for the transfer and releases the compressed buffer after
+  decoding.
 - The lite build disables cover-art download and rendering completely. The
   existing music-note placeholder remains visible.
 - The overlay image is approximately 0.54 MiB instead of 1.18 MiB.
-- The background heap ceiling is 3 MiB instead of 4 MiB. Hardware logs showed
-  a previous high-water arena near 2.2 MiB.
-- The background build contains only the Vorbis playback path selected by
-  Switify. AAC, MP3, ALAC, and Opus are disabled.
-- Existing low-resource settings remain: two BSD sessions, TCP-only networking,
-  lazy audout, and a 16 KiB main-thread stack.
+- The lite build's remaining advantage is therefore its artwork-free overlay
+  process, not a different playback engine.
 
 Browsing, playback controls, volume, shuffle, repeat, queue, playlists, search,
 and audio quality selection are unchanged. Normal and High quality continue to

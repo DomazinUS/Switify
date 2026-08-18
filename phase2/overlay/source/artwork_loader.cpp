@@ -58,7 +58,6 @@ constexpr SocketInitConfig SocketConfig = {
 
 std::atomic_bool running{false};
 bool threadCreated = false;
-bool networkReady = false;
 bool socketReady = false;
 bool curlReady = false;
 Thread workerThread{};
@@ -215,11 +214,41 @@ int transferProgress(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
   return running.load() ? 0 : 1;
 }
 
+bool openNetwork() {
+  if (socketReady && curlReady) return true;
+  socketReady = R_SUCCEEDED(socketInitialize(&SocketConfig));
+  if (!socketReady) return false;
+  curlReady = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+  if (!curlReady) {
+    socketExit();
+    socketReady = false;
+    return false;
+  }
+  return true;
+}
+
+void closeNetwork() {
+  if (curlReady) {
+    curl_global_cleanup();
+    curlReady = false;
+  }
+  if (socketReady) {
+    socketExit();
+    socketReady = false;
+  }
+}
+
 std::vector<uint8_t> download(const std::string& url) {
   std::vector<uint8_t> bytes;
-  if (!networkReady || !running.load()) return bytes;
+  // Claim the overlay's single BSD session only for an actual cache miss.
+  // Cached covers require no network service, and a completed transfer gives
+  // the session back immediately instead of holding it until Ultrahand exits.
+  if (!running.load() || !openNetwork()) return bytes;
   CURL* curl = curl_easy_init();
-  if (!curl) return bytes;
+  if (!curl) {
+    closeNetwork();
+    return bytes;
+  }
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -238,6 +267,7 @@ std::vector<uint8_t> download(const std::string& url) {
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(curl);
+  closeNetwork();
   if (result != CURLE_OK || status < 200 || status >= 300 ||
       !supportedJpeg(bytes))
     bytes.clear();
@@ -346,6 +376,9 @@ void worker(void*) {
     int width = 0;
     int height = 0;
     uint8_t* decoded = decodeJpeg(encoded, targetSize, &width, &height);
+    // The compressed response/cache buffer is transient. Release its capacity
+    // before publishing the RGBA image so only the drawable cover remains.
+    std::vector<uint8_t>().swap(encoded);
 
     mutexLock(&stateMutex);
     if (job == wantedUrl && decoded) {
@@ -373,10 +406,6 @@ bool initialize() {
   if (threadCreated) return true;
   mutexInit(&stateMutex);
   condvarInit(&stateChanged);
-  socketReady = R_SUCCEEDED(socketInitialize(&SocketConfig));
-  if (socketReady)
-    curlReady = curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
-  networkReady = socketReady && curlReady;
   running = true;
   Result result = threadCreate(&workerThread, worker, nullptr, nullptr, 0x6000,
                                0x3B, -2);
@@ -385,15 +414,7 @@ bool initialize() {
   if (R_FAILED(result)) {
     running = false;
     if (created) threadClose(&workerThread);
-    if (curlReady) {
-      curl_global_cleanup();
-      curlReady = false;
-    }
-    if (socketReady) {
-      socketExit();
-      socketReady = false;
-    }
-    networkReady = false;
+    closeNetwork();
     return false;
   }
   threadCreated = true;
@@ -416,15 +437,7 @@ void shutdown() {
   shownUrl.clear();
   pendingUrl.clear();
   wantedUrl.clear();
-  if (curlReady) {
-    curl_global_cleanup();
-    curlReady = false;
-  }
-  if (socketReady) {
-    socketExit();
-    socketReady = false;
-  }
-  networkReady = false;
+  closeNetwork();
 }
 
 void request(const std::string& url, int targetSize) {

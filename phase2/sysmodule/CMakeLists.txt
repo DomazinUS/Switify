@@ -29,19 +29,14 @@ set(BELL_DISABLE_SINKS ON CACHE BOOL "" FORCE)
 set(BELL_DISABLE_WEBSERVER ON CACHE BOOL "" FORCE)
 set(BELL_DISABLE_MQTT ON CACHE BOOL "" FORCE)
 set(BELL_CODEC_VORBIS ON CACHE BOOL "" FORCE)
-if(SWITIFY_LIGHTWEIGHT_OVERLAY)
-  # SpotifyEngine explicitly requests OGG Vorbis 160/320 and cspot falls back
-  # to OGG Vorbis 96.  These decoders cannot be selected by this service.
-  set(BELL_CODEC_AAC OFF CACHE BOOL "" FORCE)
-  set(BELL_CODEC_MP3 OFF CACHE BOOL "" FORCE)
-  set(BELL_CODEC_ALAC OFF CACHE BOOL "" FORCE)
-  set(BELL_CODEC_OPUS OFF CACHE BOOL "" FORCE)
-else()
-  set(BELL_CODEC_AAC ON CACHE BOOL "" FORCE)
-  set(BELL_CODEC_MP3 ON CACHE BOOL "" FORCE)
-  set(BELL_CODEC_ALAC ON CACHE BOOL "" FORCE)
-  set(BELL_CODEC_OPUS ON CACHE BOOL "" FORCE)
-endif()
+# SpotifyEngine explicitly requests OGG Vorbis 160/320 and cspot falls back
+# to OGG Vorbis 96. AAC, MP3, ALAC, and Opus cannot be selected by either the
+# artwork-enabled or artwork-free service, so carrying those decoders only
+# increases the resident image.
+set(BELL_CODEC_AAC OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_MP3 OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_ALAC OFF CACHE BOOL "" FORCE)
+set(BELL_CODEC_OPUS OFF CACHE BOOL "" FORCE)
 add_subdirectory(../../vendor/cspot ${CMAKE_CURRENT_BINARY_DIR}/cspot)
 
 add_executable(switify-background

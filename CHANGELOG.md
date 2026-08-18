@@ -3,6 +3,25 @@
 All notable Switify changes are documented here. Standalone NRO and overlay
 versions are tracked independently because they are separate applications.
 
+## Unreleased overlay and background service
+
+### Fixed
+
+- Bounded the background player's active queue to a 100-track window around
+  the selected item. Liked Songs and other large collections remain fully
+  paginated in the browser without multiplying up to 1,000 tracks across the
+  engine playlist, queue, cspot state, and persisted session until the fixed
+  sysmodule heap crashes.
+
+### Changed
+
+- Applied the lite service profile to the artwork-enabled overlay: a 3 MiB
+  fixed heap and only the Vorbis decoder paths Switify can actually select.
+- Made cover-art networking just-in-time. Cached JPEGs use no overlay BSD
+  session; a cache miss claims one session only for the download, releases it
+  immediately, discards the encoded buffer after decoding, and retains only
+  the currently drawable RGBA cover.
+
 ## Standalone NRO 0.6.3 — 2026-08-16
 
 ### Fixed

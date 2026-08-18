@@ -69,6 +69,13 @@ constexpr const char* SPOTIFY_APP_VERSION = "1.2.52.442";
 #ifdef SWITIFY_BACKGROUND_SERVICE
 constexpr size_t MAX_CACHED_COLLECTIONS = 1;
 constexpr size_t MAX_CACHED_COLLECTION_TRACKS = 300;
+// A large collection remains fully available to the overlay browser, but the
+// fixed-heap background process must not duplicate all of it into the player,
+// queue, cspot state, and persisted session at once. Keep a useful amount of
+// history before the selected track and fill the rest of the window with the
+// upcoming tracks.
+constexpr size_t MAX_BACKGROUND_PLAYBACK_TRACKS = 100;
+constexpr size_t BACKGROUND_PLAYBACK_HISTORY = 20;
 #else
 constexpr size_t MAX_CACHED_COLLECTIONS = 10;
 constexpr size_t MAX_CACHED_COLLECTION_TRACKS = 6000;
@@ -80,6 +87,36 @@ bool sameTrack(const SpotifyEngine::Track& left,
   if (!left.id.empty() && !right.id.empty()) return left.id == right.id;
   return left.name == right.name && left.artist == right.artist;
 }
+
+#ifdef SWITIFY_BACKGROUND_SERVICE
+size_t boundBackgroundPlaybackWindow(
+    std::vector<SpotifyEngine::Track>& tracks, size_t selectedIndex,
+    size_t* windowStart = nullptr, size_t* originalCount = nullptr) {
+  if (tracks.empty()) return 0;
+  if (selectedIndex >= tracks.size()) selectedIndex = 0;
+  if (originalCount) *originalCount = tracks.size();
+  if (windowStart) *windowStart = 0;
+  if (tracks.size() <= MAX_BACKGROUND_PLAYBACK_TRACKS) return selectedIndex;
+
+  size_t first = selectedIndex > BACKGROUND_PLAYBACK_HISTORY
+                     ? selectedIndex - BACKGROUND_PLAYBACK_HISTORY
+                     : 0;
+  if (first + MAX_BACKGROUND_PLAYBACK_TRACKS > tracks.size())
+    first = tracks.size() - MAX_BACKGROUND_PLAYBACK_TRACKS;
+  const size_t end = first + MAX_BACKGROUND_PLAYBACK_TRACKS;
+
+  std::vector<SpotifyEngine::Track> window;
+  window.reserve(MAX_BACKGROUND_PLAYBACK_TRACKS);
+  window.insert(window.end(),
+                std::make_move_iterator(
+                    tracks.begin() + static_cast<std::ptrdiff_t>(first)),
+                std::make_move_iterator(
+                    tracks.begin() + static_cast<std::ptrdiff_t>(end)));
+  tracks = std::move(window);
+  if (windowStart) *windowStart = first;
+  return selectedIndex - first;
+}
+#endif
 
 cspot::SpircHandler::LocalRepeatMode localRepeatMode(
     SpotifyEngine::RepeatMode mode) {
@@ -1120,6 +1157,18 @@ bool SpotifyEngine::restorePlaybackSession() {
 
     size_t index = session.value("index", static_cast<size_t>(0));
     if (index >= tracks.size()) index = 0;
+#ifdef SWITIFY_BACKGROUND_SERVICE
+    size_t restoredWindowStart = 0;
+    size_t restoredTrackCount = 0;
+    index = boundBackgroundPlaybackWindow(tracks, index, &restoredWindowStart,
+                                          &restoredTrackCount);
+    if (restoredTrackCount > tracks.size()) {
+      nxlog::pushf("Restored playback window: tracks %u-%u of %u",
+                   static_cast<unsigned>(restoredWindowStart + 1),
+                   static_cast<unsigned>(restoredWindowStart + tracks.size()),
+                   static_cast<unsigned>(restoredTrackCount));
+    }
+#endif
     uint32_t positionMs = session.value("position_ms", 0U);
     if (tracks[index].durationMs > 0)
       positionMs = std::min(positionMs, tracks[index].durationMs);
@@ -3025,6 +3074,19 @@ void SpotifyEngine::playTracks(std::vector<Track> tracks, size_t startIndex,
                                uint32_t positionMs) {
   if (currentState != State::Ready || !handler || tracks.empty()) return;
   if (startIndex >= tracks.size()) startIndex = 0;
+
+#ifdef SWITIFY_BACKGROUND_SERVICE
+  size_t playbackWindowStart = 0;
+  size_t sourceTrackCount = 0;
+  startIndex = boundBackgroundPlaybackWindow(
+      tracks, startIndex, &playbackWindowStart, &sourceTrackCount);
+  if (sourceTrackCount > tracks.size()) {
+    nxlog::pushf("Playback window: tracks %u-%u of %u",
+                 static_cast<unsigned>(playbackWindowStart + 1),
+                 static_cast<unsigned>(playbackWindowStart + tracks.size()),
+                 static_cast<unsigned>(sourceTrackCount));
+  }
+#endif
 
   const std::vector<Track> sourceTracks = tracks;
   const size_t sourceIndex = startIndex;
