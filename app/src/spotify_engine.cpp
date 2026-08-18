@@ -2744,6 +2744,7 @@ void SpotifyEngine::fetchPlaylistTrackPage(
     try {
       std::unordered_set<std::string> seen;
       size_t sourceCount = 0;
+      const Json* pageContainer = nullptr;
       if (collection.kind == Collection::Kind::LIKED) {
         const Json variables = {
             {"uri", "spotify:collection:tracks"},
@@ -2751,9 +2752,10 @@ void SpotifyEngine::fetchPlaylistTrackPage(
             {"limit", limit}};
         const auto json = Json::parse(
             partnerRequest("fetchLibraryTracks", variables.dump()));
-        sourceCount = appendPartnerTrackPage(
-            jsonPath(json, {"data", "me", "library", "tracks"}),
-            result.value.tracks, seen);
+        pageContainer =
+            jsonPath(json, {"data", "me", "library", "tracks"});
+        sourceCount = appendPartnerTrackPage(pageContainer,
+                                             result.value.tracks, seen);
       } else {
         const Json variables = {
             {"uri", "spotify:playlist:" + collection.id},
@@ -2762,12 +2764,27 @@ void SpotifyEngine::fetchPlaylistTrackPage(
             {"enableWatchFeedEntrypoint", false}};
         const auto json =
             Json::parse(partnerRequest("fetchPlaylist", variables.dump()));
-        sourceCount = appendPartnerTrackPage(
-            jsonPath(json, {"data", "playlistV2", "content"}),
-            result.value.tracks, seen);
+        pageContainer =
+            jsonPath(json, {"data", "playlistV2", "content"});
+        sourceCount = appendPartnerTrackPage(pageContainer,
+                                             result.value.tracks, seen);
       }
       result.value.nextOffset = offset + sourceCount;
       result.value.hasMore = sourceCount == limit;
+      if (pageContainer && pageContainer->is_object()) {
+        result.value.totalCount =
+            static_cast<size_t>(jsonUint(*pageContainer, "totalCount"));
+        if (result.value.totalCount == 0) {
+          const auto paging = pageContainer->find("pagingInfo");
+          if (paging != pageContainer->end() && paging->is_object())
+            result.value.totalCount =
+                static_cast<size_t>(jsonUint(*paging, "totalCount"));
+        }
+        // Some Pathfinder responses report the window size as totalCount.
+        if (result.value.hasMore &&
+            result.value.totalCount <= result.value.nextOffset)
+          result.value.totalCount = 0;
+      }
       nxlog::pushf("Collection page \"%s\": source %u-%u, %u tracks%s",
                    collection.name.c_str(), static_cast<unsigned>(offset + 1),
                    static_cast<unsigned>(result.value.nextOffset),
@@ -2777,6 +2794,110 @@ void SpotifyEngine::fetchPlaylistTrackPage(
       result.error = error.what();
       nxlog::pushf("Collection page fetch failed: %s", error.what());
     }
+    cb(std::move(result));
+  });
+}
+
+void SpotifyEngine::fetchShuffledCollectionWindow(
+    const Collection& collection, std::vector<Track> visiblePage,
+    size_t selectedIndex, size_t maximumTracks,
+    std::function<void(Result<std::vector<Track>>)> cb) {
+  maximumTracks = std::max<size_t>(1, maximumTracks);
+  launchWorker([this, collection, visiblePage = std::move(visiblePage),
+                selectedIndex, maximumTracks, cb = std::move(cb)]() mutable {
+    Result<std::vector<Track>> result;
+    if (currentState != State::Ready) {
+      result.error = "Spotify is still connecting";
+      cb(std::move(result));
+      return;
+    }
+    if (visiblePage.empty() || selectedIndex >= visiblePage.size() ||
+        visiblePage[selectedIndex].uri.empty()) {
+      result.error = "The selected track is unavailable";
+      cb(std::move(result));
+      return;
+    }
+
+    Track selected = visiblePage[selectedIndex];
+    std::unordered_set<std::string> seen;
+    seen.insert(selected.uri);
+    std::vector<Track> candidates;
+    candidates.reserve(maximumTracks * 2);
+
+    // The Web API count is a single inexpensive request and, unlike some
+    // Pathfinder totalCount fields, describes the complete saved library.
+    // Only page metadata is fetched afterwards; the background service never
+    // retains thousands of Track objects at once.
+    size_t totalTracks = collection.itemCount > 0
+                             ? static_cast<size_t>(collection.itemCount)
+                             : 0;
+    try {
+      if (collection.kind == Collection::Kind::LIKED) {
+        const auto count = Json::parse(
+            apiRequest("GET", "/v1/me/tracks?limit=1&offset=0"));
+        totalTracks = std::max(
+            totalTracks, static_cast<size_t>(count.value("total", 0u)));
+      }
+
+      constexpr size_t PageSize = 50;
+      if (totalTracks > 0) {
+        const size_t pageCount = (totalTracks + PageSize - 1) / PageSize;
+        std::vector<size_t> pageOffsets;
+        pageOffsets.reserve(pageCount);
+        for (size_t page = 0; page < pageCount; ++page)
+          pageOffsets.push_back(page * PageSize);
+        std::mt19937 generator(shuffleSeed());
+        std::shuffle(pageOffsets.begin(), pageOffsets.end(), generator);
+
+        // Four independently selected source pages provide a 200-track pool
+        // spanning the entire library. Shuffle chooses the bounded playback
+        // window from that pool, rather than from the page visible in the UI.
+        const size_t pagesToFetch = std::min<size_t>(4, pageOffsets.size());
+        for (size_t page = 0; page < pagesToFetch; ++page) {
+          std::vector<Track> fetched;
+          std::unordered_set<std::string> pageSeen;
+          const Json variables = {
+              {"uri", "spotify:collection:tracks"},
+              {"offset", pageOffsets[page]},
+              {"limit", PageSize}};
+          const auto json = Json::parse(
+              partnerRequest("fetchLibraryTracks", variables.dump()));
+          appendPartnerTrackPage(
+              jsonPath(json, {"data", "me", "library", "tracks"}),
+              fetched, pageSeen);
+          for (auto& track : fetched) {
+            if (!track.uri.empty() && seen.insert(track.uri).second)
+              candidates.push_back(std::move(track));
+          }
+        }
+      }
+    } catch (const std::exception& error) {
+      // A count/sample failure must not make the selected song unplayable.
+      // Retain the visible page as a graceful fallback and leave diagnostics.
+      nxlog::pushf("Global collection shuffle sampling failed: %s",
+                   error.what());
+    }
+
+    // The current UI page is fallback material and also fills short libraries;
+    // it no longer defines the full Shuffle candidate set.
+    for (auto& track : visiblePage) {
+      if (!track.uri.empty() && seen.insert(track.uri).second)
+        candidates.push_back(std::move(track));
+    }
+    std::mt19937 generator(shuffleSeed());
+    std::shuffle(candidates.begin(), candidates.end(), generator);
+
+    result.value.reserve(std::min(maximumTracks, candidates.size() + 1));
+    result.value.push_back(std::move(selected));
+    for (auto& track : candidates) {
+      if (result.value.size() >= maximumTracks) break;
+      result.value.push_back(std::move(track));
+    }
+    nxlog::pushf(
+        "Global shuffle window: %u of %u liked tracks (%u candidates)",
+        static_cast<unsigned>(result.value.size()),
+        static_cast<unsigned>(totalTracks),
+        static_cast<unsigned>(candidates.size()));
     cb(std::move(result));
   });
 }

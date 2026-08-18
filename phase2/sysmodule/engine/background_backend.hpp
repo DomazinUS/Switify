@@ -82,6 +82,10 @@ class BackgroundBackend {
   void changeRemoteBrowsePage(size_t offset);
   void backBrowse(uint64_t generation);
   void playBrowseItem(uint64_t generation, uint32_t index);
+  void startGlobalLikedShuffle(
+      SpotifyEngine::Collection collection,
+      std::vector<SpotifyEngine::Track> visibleTracks, size_t selectedIndex,
+      std::string sourceName, bool preserveCurrentTrack);
   void browseCurrentPlaylist(bool queue);
   BrowsePage buildHomeRoot(const SpotifyEngine::HomeData& data) const;
   BrowsePage buildLibraryRoot(const SpotifyEngine::LibraryData& data) const;
@@ -111,6 +115,7 @@ class BackgroundBackend {
   SpotifyEngine::LibraryData libraryCache;
   SpotifyEngine::SearchResults searchCache;
   std::string searchQuery;
+  std::atomic<uint64_t> shufflePlaybackRequest{0};
 };
 
 }  // namespace switify::phase2

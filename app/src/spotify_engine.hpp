@@ -123,6 +123,7 @@ class SpotifyEngine {
     std::vector<Track> tracks;
     size_t offset = 0;
     size_t nextOffset = 0;
+    size_t totalCount = 0;
     bool hasMore = false;
   };
 
@@ -216,6 +217,13 @@ class SpotifyEngine {
   void fetchPlaylistTrackPage(
       const Collection& collection, size_t offset, size_t limit,
       std::function<void(Result<TrackPage>)> cb);
+  // Builds a fixed-size queue whose candidates are sampled from the complete
+  // remote collection. This keeps the overlay's memory bounded without making
+  // its visible 50-row page the effective Shuffle universe.
+  void fetchShuffledCollectionWindow(
+      const Collection& collection, std::vector<Track> visiblePage,
+      size_t selectedIndex, size_t maximumTracks,
+      std::function<void(Result<std::vector<Track>>)> cb);
   void search(const std::string& query,
               std::function<void(Result<SearchResults>)> cb);
   void setTrackSaved(const std::string& uri, bool saved,
