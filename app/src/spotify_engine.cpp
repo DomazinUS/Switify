@@ -314,7 +314,18 @@ std::string joinArtists(const Json& artists) {
   return result;
 }
 
-std::string pickImage(const Json& images) {
+constexpr int DefaultArtworkWidth = 300;
+#ifdef SWITIFY_BACKGROUND_SERVICE
+constexpr int PodcastArtworkWidth = DefaultArtworkWidth;
+#else
+// Podcast art is displayed in a large detail panel by the full NRO. The
+// background service deliberately retains the smaller choice above so the
+// overlay does not download or cache larger files.
+constexpr int PodcastArtworkWidth = 640;
+#endif
+
+std::string pickImage(const Json& images,
+                      int targetWidth = DefaultArtworkWidth) {
   if (!images.is_array() || images.empty()) return "";
   int bestDistance = std::numeric_limits<int>::max();
   std::string best;
@@ -322,7 +333,7 @@ std::string pickImage(const Json& images) {
     const std::string url = image.value("url", "");
     if (url.empty()) continue;
     const int width = image.value("width", 300);
-    const int distance = std::abs(width - 300);
+    const int distance = std::abs(width - targetWidth);
     if (best.empty() || distance < bestDistance) {
       best = url;
       bestDistance = distance;
@@ -371,13 +382,14 @@ SpotifyEngine::Track parseEpisode(const Json& item,
   episode.artist = defaultPublisher;
   episode.imageUrl = defaultImage;
   episode.podcast = true;
-  if (item.contains("images")) episode.imageUrl = pickImage(item["images"]);
+  if (item.contains("images"))
+    episode.imageUrl = pickImage(item["images"], PodcastArtworkWidth);
   if (item.contains("show") && item["show"].is_object()) {
     const auto& show = item["show"];
     episode.album = show.value("name", episode.album);
     episode.artist = show.value("publisher", episode.artist);
     if (episode.imageUrl.empty() && show.contains("images"))
-      episode.imageUrl = pickImage(show["images"]);
+      episode.imageUrl = pickImage(show["images"], PodcastArtworkWidth);
   }
   if (episode.artist.empty()) episode.artist = episode.album;
   return episode;
@@ -448,7 +460,7 @@ SpotifyEngine::Collection parseShow(const Json& item) {
   collection.subtitle = item.value("publisher", "Podcast");
   collection.itemCount = item.value("total_episodes", 0);
   if (item.contains("images"))
-    collection.imageUrl = pickImage(item["images"]);
+    collection.imageUrl = pickImage(item["images"], PodcastArtworkWidth);
   return collection;
 }
 
@@ -591,36 +603,42 @@ std::string partnerArtists(const Json& item) {
 }
 
 void findPartnerImage(const Json& value, std::string& best,
-                      int& bestDistance, int depth = 0) {
+                      int& bestDistance,
+                      int targetWidth = DefaultArtworkWidth, int depth = 0) {
   if (depth > 10) return;
   if (value.is_object()) {
     const std::string url = jsonString(value, "url");
     if (!url.empty()) {
       const int width = static_cast<int>(jsonUint(value, "width"));
-      const int distance = width > 0 ? std::abs(width - 300) : 1000;
+      const int distance =
+          width > 0 ? std::abs(width - targetWidth) : 1000;
       if (best.empty() || distance < bestDistance) {
         best = url;
         bestDistance = distance;
       }
     }
     for (auto child = value.begin(); child != value.end(); ++child)
-      findPartnerImage(child.value(), best, bestDistance, depth + 1);
+      findPartnerImage(child.value(), best, bestDistance, targetWidth,
+                       depth + 1);
   } else if (value.is_array()) {
     for (const auto& child : value)
-      findPartnerImage(child, best, bestDistance, depth + 1);
+      findPartnerImage(child, best, bestDistance, targetWidth, depth + 1);
   }
 }
 
-std::string partnerImage(const Json& item) {
+std::string partnerImage(const Json& item,
+                         int targetWidth = DefaultArtworkWidth) {
   std::string best;
   int bestDistance = std::numeric_limits<int>::max();
   // Album art is the most useful track image. Search it first and retain it
   // when available instead of accidentally selecting an artist avatar.
   for (const char* key : {"albumOfTrack", "album"}) {
     const auto album = item.find(key);
-    if (album != item.end()) findPartnerImage(*album, best, bestDistance);
+    if (album != item.end())
+      findPartnerImage(*album, best, bestDistance, targetWidth);
   }
-  if (best.empty()) findPartnerImage(item, best, bestDistance);
+  if (best.empty())
+    findPartnerImage(item, best, bestDistance, targetWidth);
   return best;
 }
 
@@ -691,7 +709,7 @@ SpotifyEngine::Track parsePartnerEpisode(const Json& value) {
       if (!episode.album.empty()) break;
     }
   }
-  episode.imageUrl = partnerImage(item);
+  episode.imageUrl = partnerImage(item, PodcastArtworkWidth);
   episode.podcast = true;
   return episode;
 }
@@ -724,7 +742,10 @@ SpotifyEngine::Collection parsePartnerCollection(
   collection.id = idFromUri(collection.uri);
   collection.name = nestedName(item);
   collection.description = jsonString(item, "description");
-  collection.imageUrl = partnerImage(item);
+  collection.imageUrl = partnerImage(
+      item, kind == SpotifyEngine::Collection::Kind::SHOW
+                ? PodcastArtworkWidth
+                : DefaultArtworkWidth);
   collection.itemCount = static_cast<int>(jsonUint(item, "totalTracks"));
   if (collection.itemCount == 0) {
     const auto content = item.find("content");
@@ -1143,7 +1164,8 @@ void SpotifyEngine::savePlaybackSession() {
            {"album", track.album},
            {"image", track.imageUrl},
            {"duration_ms", track.durationMs},
-           {"explicit", track.explicitContent}});
+           {"explicit", track.explicitContent},
+           {"podcast", track.podcast}});
     }
   }
 
@@ -1199,6 +1221,7 @@ bool SpotifyEngine::restorePlaybackSession() {
       track.imageUrl = item.value("image", "");
       track.durationMs = item.value("duration_ms", 0U);
       track.explicitContent = item.value("explicit", false);
+      track.podcast = item.value("podcast", false);
       if (!track.uri.empty()) tracks.push_back(std::move(track));
     }
     if (tracks.empty()) throw std::runtime_error("session has no tracks");
@@ -1289,6 +1312,13 @@ SpotifyEngine::PlaybackSessionInfo SpotifyEngine::playbackSessionInfo() {
   info.trackCount = activePlaylist.size();
   info.currentIndex = activePlaylistIndex;
   info.hasCurrent = activePlaylistHasCurrent;
+  if (!activePlaylist.empty()) {
+    const size_t typeIndex =
+        activePlaylistHasCurrent && activePlaylistIndex < activePlaylist.size()
+            ? activePlaylistIndex
+            : 0;
+    info.podcast = activePlaylist[typeIndex].podcast;
+  }
   info.revision = activePlaylistRevision;
   return info;
 }

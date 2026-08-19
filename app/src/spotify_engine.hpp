@@ -116,6 +116,7 @@ class SpotifyEngine {
     size_t trackCount = 0;
     size_t currentIndex = 0;
     bool hasCurrent = false;
+    bool podcast = false;
     uint64_t revision = 0;
   };
 

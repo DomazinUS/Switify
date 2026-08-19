@@ -63,6 +63,7 @@ class BackgroundBackend {
     uint32_t depth = 0;
     BrowsePlayMode playMode = BrowsePlayMode::Tracks;
     size_t pageOffset = 0;
+    bool episodePage = false;
     bool remotelyPaged = false;
     bool remoteHasMore = false;
     size_t remoteOffset = 0;

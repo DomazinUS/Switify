@@ -62,8 +62,11 @@ void TrackListActivity::onContentAvailable() {
     return;
   }
 
+  const bool podcast = collection.kind == SpotifyEngine::Collection::Kind::SHOW;
   list->addView(swui::makeStatePanel(
-      "Loading tracks", "Fetching this collection from Spotify."));
+      podcast ? "Loading episodes" : "Loading tracks",
+      podcast ? "Fetching episodes from Spotify."
+              : "Fetching this collection from Spotify."));
 
   auto token = alive;
   SpotifyEngine::instance().fetchPlaylistTracks(
@@ -87,10 +90,15 @@ void TrackListActivity::showTracks(
   }
   currentTracks = std::move(result.value);
   if (currentTracks.empty()) {
-    subtitle->setText("No playable tracks");
+    const bool podcast =
+        collection.kind == SpotifyEngine::Collection::Kind::SHOW;
+    subtitle->setText(podcast ? "No playable episodes"
+                              : "No playable tracks");
     list->addView(swui::makeStatePanel(
-        "This collection is empty",
-        "Spotify did not return any playable items for this collection."));
+        podcast ? "This podcast has no episodes"
+                : "This collection is empty",
+        podcast ? "Spotify did not return any playable episodes for this show."
+                : "Spotify did not return any playable items for this collection."));
     return;
   }
 

@@ -1471,6 +1471,7 @@ void NowPlayingTab::rebuildPlaylistPage(
 
   const std::string source =
       session.name.empty() ? "Current playback session" : session.name;
+  playlistHeader->setTitle(session.podcast ? "Episodes" : "Playlist");
   if (session.trackCount == 0) {
     playlistPageStart = 0;
     playlistPageEnd = 0;
@@ -1487,14 +1488,18 @@ void NowPlayingTab::rebuildPlaylistPage(
                    kNowPlayingPageSize);
   playlistPageEnd = std::min(session.trackCount,
                              playlistPageStart + kNowPlayingPageSize);
+  const std::string itemName = session.podcast ? "Episodes" : "Songs";
+  const std::string itemNameLower = session.podcast ? "episodes" : "songs";
   playlistHeader->setSubtitle(
-      source + "  |  Songs " + std::to_string(playlistPageStart + 1) +
+      source + "  |  " + itemName + " " +
+      std::to_string(playlistPageStart + 1) +
       "-" + std::to_string(playlistPageEnd) + " of " +
       std::to_string(session.trackCount));
 
   if (playlistPageStart > 0) {
     auto* previousPage = swui::makeActionButton(
-        "Previous " + std::to_string(kNowPlayingPageSize) + " songs",
+        "Previous " + std::to_string(kNowPlayingPageSize) + " " +
+            itemNameLower,
         [this](brls::View*) {
           requestPlaylistPage(playlistPageStart >= kNowPlayingPageSize
                                   ? playlistPageStart - kNowPlayingPageSize
@@ -1528,7 +1533,7 @@ void NowPlayingTab::rebuildPlaylistPage(
         "Next " + std::to_string(std::min(
                       kNowPlayingPageSize,
                       session.trackCount - playlistPageEnd)) +
-            " songs",
+            " " + itemNameLower,
         [this](brls::View*) {
           requestPlaylistPage(playlistPageEnd);
           return true;
