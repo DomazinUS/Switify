@@ -371,7 +371,7 @@ void BackgroundBackend::requestHome() {
 
 void BackgroundBackend::requestLibrary() {
   const uint64_t generation =
-      beginRoot("Your Library", "Playlists, liked songs, and albums");
+      beginRoot("Your Library", "Saved music and followed podcasts");
   engine.fetchLibrary(
       [this, generation](
           SpotifyEngine::Result<SpotifyEngine::LibraryData> result) {
@@ -465,6 +465,7 @@ BackgroundBackend::BrowsePage BackgroundBackend::buildLibraryRoot(
   };
   add(BrowseSection::LibraryPlaylists, "Playlists and liked songs",
       data.playlists.size());
+  add(BrowseSection::LibraryPodcasts, "Podcasts", data.podcasts.size());
   return page;
 }
 
@@ -525,6 +526,9 @@ BackgroundBackend::BrowsePage BackgroundBackend::buildSection(
       break;
     case BrowseSection::LibraryPlaylists:
       for (const auto& item : libraryCache.playlists) addCollection(item);
+      break;
+    case BrowseSection::LibraryPodcasts:
+      for (const auto& item : libraryCache.podcasts) addCollection(item);
       break;
     case BrowseSection::SearchTracks:
       for (const auto& item : searchCache.tracks) addTrack(item);
@@ -602,7 +606,8 @@ void BackgroundBackend::openBrowseItem(uint64_t generation,
   const uint64_t next = beginChild(entry.name, entry.subtitle);
   const uint32_t depth = core.browseHeader().depth;
   if (entry.collection.kind == SpotifyEngine::Collection::Kind::LIKED ||
-      entry.collection.kind == SpotifyEngine::Collection::Kind::PLAYLIST) {
+      entry.collection.kind == SpotifyEngine::Collection::Kind::PLAYLIST ||
+      entry.collection.kind == SpotifyEngine::Collection::Kind::SHOW) {
     engine.fetchPlaylistTrackPage(
         entry.collection, 0, RemoteTrackPageSize,
         [this, next, depth, collection = entry.collection](

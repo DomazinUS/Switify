@@ -2628,6 +2628,7 @@ void SpotifyEngine::fetchLibrary(
     } catch (const std::exception& error) {
       appendWarning(errors, "Albums: " + std::string(error.what()));
     }
+#endif
     try {
       appendSavedPodcasts(
           Json::parse(partnerRequest(
@@ -2640,7 +2641,6 @@ void SpotifyEngine::fetchLibrary(
     } catch (const std::exception& error) {
       appendWarning(errors, "Podcasts: " + std::string(error.what()));
     }
-#endif
     if (successfulSections == 0) result.error = errors;
     nxlog::pushf("Library: %d collections, %d albums, %d podcasts%s%s",
                  static_cast<int>(result.value.playlists.size()),
@@ -2664,7 +2664,8 @@ void SpotifyEngine::fetchPlaylistTrackPage(
   limit = std::clamp<size_t>(limit, 1, 50);
 
   if (collection.kind != Collection::Kind::LIKED &&
-      collection.kind != Collection::Kind::PLAYLIST) {
+      collection.kind != Collection::Kind::PLAYLIST &&
+      collection.kind != Collection::Kind::SHOW) {
     fetchPlaylistTracks(
         collection,
         [offset, limit, cb = std::move(cb)](
@@ -2715,7 +2716,7 @@ void SpotifyEngine::fetchPlaylistTrackPage(
         sourceCount = appendPartnerTrackPage(
             jsonPath(json, {"data", "me", "library", "tracks"}),
             result.value.tracks, seen);
-      } else {
+      } else if (collection.kind == Collection::Kind::PLAYLIST) {
         const Json variables = {
             {"uri", "spotify:playlist:" + collection.id},
             {"offset", offset},
@@ -2726,6 +2727,21 @@ void SpotifyEngine::fetchPlaylistTrackPage(
         sourceCount = appendPartnerTrackPage(
             jsonPath(json, {"data", "playlistV2", "content"}),
             result.value.tracks, seen);
+      } else {
+        const std::string showUri =
+            collection.uri.empty() ? "spotify:show:" + collection.id
+                                   : collection.uri;
+        const Json variables = {
+            {"uri", showUri},
+            {"offset", offset},
+            {"limit", limit},
+            {"includeEpisodeContentRatingsV2", false}};
+        const auto json = Json::parse(
+            partnerRequest("queryPodcastEpisodes", variables.dump()));
+        sourceCount = appendPartnerEpisodePage(
+            jsonPath(json, {"data", "podcastUnionV2", "episodesV2"}),
+            result.value.tracks, seen, collection.name,
+            collection.subtitle, collection.imageUrl);
       }
       result.value.nextOffset = offset + sourceCount;
       result.value.hasMore = sourceCount == limit;

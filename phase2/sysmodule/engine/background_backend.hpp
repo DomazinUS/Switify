@@ -43,6 +43,7 @@ class BackgroundBackend {
     HomeRecent,
     HomePlaylists,
     LibraryPlaylists,
+    LibraryPodcasts,
     SearchTracks,
     SearchPlaylists,
   };
