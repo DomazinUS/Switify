@@ -36,7 +36,7 @@ void TrackListActivity::onContentAvailable() {
                                  ? brls::Visibility::GONE
                                  : brls::Visibility::VISIBLE);
   if (!collection.imageUrl.empty())
-    swui::loadRemoteImage(artwork, collection.imageUrl);
+    swui::loadRemoteImage(artwork, collection.imageUrl, 640);
 
   playAll->setFocusable(false);
   playAll->setBackgroundColor(swui::surfaceRaised());

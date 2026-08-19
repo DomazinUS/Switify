@@ -26,6 +26,29 @@ std::string equalizerDbText(float db) {
   return std::to_string(rounded) + " dB";
 }
 
+void drawAnimatedPlayerBackground(NVGcontext* vg, float x, float y,
+                                  float width, float height) {
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now()
+                                       .time_since_epoch())
+          .count();
+  const double phase = seconds * 0.12;
+  const auto channel = [](double value) -> unsigned char {
+    return static_cast<unsigned char>(
+        std::clamp(18.0 + (std::sin(value) + 1.0) * 24.0, 0.0, 255.0));
+  };
+  const NVGcolor first =
+      nvgRGB(channel(phase), channel(phase + 2.1), channel(phase + 4.2));
+  const NVGcolor second = nvgRGB(channel(phase + 3.4),
+                                 channel(phase + 5.5),
+                                 channel(phase + 1.3));
+  nvgBeginPath(vg);
+  nvgRect(vg, x, y, width, height);
+  nvgFillPaint(vg, nvgLinearGradient(vg, x, y, x + width, y + height,
+                                     first, second));
+  nvgFill(vg);
+}
+
 brls::Box* makeHeading(const std::string& title, const std::string& subtitle,
                        brls::Label** titleOut = nullptr,
                        brls::Label** subtitleOut = nullptr) {
@@ -296,6 +319,107 @@ void showInformationPage(
   brls::Application::pushActivity(new brls::Activity(page));
 }
 
+class LyricsView final : public brls::Box {
+ public:
+  explicit LyricsView(SpotifyEngine::NowPlaying snapshot)
+      : alive(std::make_shared<std::atomic_bool>(true)) {
+    setAxis(brls::Axis::COLUMN);
+    setDimensions(brls::Application::contentWidth,
+                  brls::Application::contentHeight);
+    setBackgroundColor(swui::background());
+    registerAction(
+        "Back", brls::BUTTON_B,
+        [](brls::View*) { return brls::Application::popActivity(); });
+
+    auto* top = new brls::Box();
+    top->setAxis(brls::Axis::ROW);
+    top->setAlignItems(brls::AlignItems::CENTER);
+    top->setPadding(22, swui::kPagePadding, 16, swui::kPagePadding);
+    top->addView(makeHeading(
+        "Lyrics", snapshot.name.empty()
+                      ? "Choose a song in Now Playing first"
+                      : snapshot.name +
+                            (snapshot.artist.empty() ? ""
+                                                     : " · " + snapshot.artist)));
+    auto* back = swui::makeActionButton(
+        "Back", [](brls::View*) { return brls::Application::popActivity(); });
+    back->setWidth(130);
+    top->addView(back);
+    addView(top);
+
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+    content = new brls::Box();
+    content->setAxis(brls::Axis::COLUMN);
+    content->setPadding(4, swui::kPagePadding, 44, swui::kPagePadding);
+    content->addView(swui::makeStatePanel(
+        "Loading lyrics", "Requesting lyrics from Spotify…"));
+    scroll->setContentView(content);
+    addView(scroll);
+
+    if (snapshot.uri.empty() && snapshot.id.empty()) {
+      renderError("This track does not expose a Spotify ID");
+      return;
+    }
+    auto token = alive;
+    SpotifyEngine::instance().fetchLyrics(
+        snapshot.uri.empty() ? snapshot.id : snapshot.uri,
+        [this, token](SpotifyEngine::Result<SpotifyEngine::LyricsData> result) {
+          brls::sync([this, token, result = std::move(result)]() mutable {
+            if (!token->load()) return;
+            if (!result.ok()) {
+              renderError(result.error);
+              return;
+            }
+            content->clearViews();
+            auto* source = swui::makeStatePanel(
+                result.value.synced ? "Line-synced lyrics" : "Lyrics",
+                result.value.provider.empty()
+                    ? "Provided by Spotify"
+                    : "Provided by " + result.value.provider);
+            source->setFocusable(true);
+            content->addView(source);
+            for (const auto& line : result.value.lines) {
+              auto* row = swui::makeStatePanel(
+                  line.words,
+                  result.value.synced
+                      ? swui::formatDuration(line.startTimeMs)
+                      : std::string());
+              row->setFocusable(true);
+              row->setMarginTop(8);
+              content->addView(row);
+            }
+          });
+        });
+  }
+
+  ~LyricsView() override { alive->store(false); }
+
+ private:
+  void renderError(const std::string& detail) {
+    content->clearViews();
+    content->addView(swui::makeStatePanel(
+        "Lyrics unavailable",
+        detail +
+            "\n\nLyrics availability depends on Spotify and may vary by "
+            "track, account, and region."));
+  }
+
+  brls::Box* content = nullptr;
+  std::shared_ptr<std::atomic_bool> alive;
+};
+
+void showLyricsPage() {
+  const auto snapshot = SpotifyEngine::instance().nowPlaying();
+  if (!snapshot.hasTrack) {
+    brls::Application::notify("Choose a song before opening lyrics");
+    return;
+  }
+  brls::Application::pushActivity(
+      new brls::Activity(new LyricsView(snapshot)));
+}
+
 class TheaterView : public brls::Box {
  public:
   TheaterView() : alive(std::make_shared<std::atomic_bool>(true)) {
@@ -473,6 +597,12 @@ class TheaterView : public brls::Box {
     if (std::chrono::steady_clock::now() - lastRefresh >
         std::chrono::milliseconds(250))
       refresh();
+    if (swsettings::animatedPlayerBackgroundEnabled()) {
+      setBackgroundColor(nvgRGBA(0, 0, 0, 0));
+      drawAnimatedPlayerBackground(vg, x, y, width, height);
+    } else {
+      setBackgroundColor(nvgRGB(7, 9, 12));
+    }
     brls::Box::draw(vg, x, y, width, height, style, ctx);
   }
 
@@ -488,7 +618,7 @@ class TheaterView : public brls::Box {
       album->setText(snapshot.album);
       if (!snapshot.imageUrl.empty() && snapshot.imageUrl != loadedArtworkUrl) {
         loadedArtworkUrl = snapshot.imageUrl;
-        swui::loadRemoteImage(artwork, snapshot.imageUrl);
+        swui::loadRemoteImage(artwork, snapshot.imageUrl, 640);
       }
     }
     playPauseLabel->setText(snapshot.paused ? "▶" : "II");
@@ -1350,13 +1480,22 @@ NowPlayingTab::NowPlayingTab()
         showQueuePage();
         return true;
       });
+  auto* lyrics = swui::makeActionButton(
+      "Lyrics",
+      [](brls::View*) {
+        showLyricsPage();
+        return true;
+      });
   save->setMarginRight(8);
   save->setWidth(82);
+  lyrics->setMarginRight(8);
+  lyrics->setGrow(1.0f);
   queue->setGrow(1.0f);
-  for (auto* button : {save, queue}) {
+  for (auto* button : {save, lyrics, queue}) {
     button->setPadding(10, 12, 10, 12);
   }
   modes->addView(save);
+  modes->addView(lyrics);
   modes->addView(queue);
   info->addView(modes);
 
@@ -1601,7 +1740,7 @@ void NowPlayingTab::refresh() {
     album->setText(snapshot.album);
     if (!snapshot.imageUrl.empty() && snapshot.imageUrl != loadedArtworkUrl) {
       loadedArtworkUrl = snapshot.imageUrl;
-      swui::loadRemoteImage(artwork, snapshot.imageUrl);
+      swui::loadRemoteImage(artwork, snapshot.imageUrl, 640);
     }
   }
   playPauseLabel->setText(snapshot.paused ? "▶" : "II");
@@ -1641,6 +1780,12 @@ void NowPlayingTab::draw(NVGcontext* vg, float x, float y, float width,
   if (std::chrono::steady_clock::now() - lastRefresh >
       std::chrono::milliseconds(250))
     refresh();
+  if (swsettings::animatedPlayerBackgroundEnabled()) {
+    setBackgroundColor(nvgRGBA(0, 0, 0, 0));
+    drawAnimatedPlayerBackground(vg, x, y, width, height);
+  } else {
+    setBackgroundColor(swui::background());
+  }
   brls::Box::draw(vg, x, y, width, height, style, ctx);
 }
 
@@ -1797,6 +1942,27 @@ SettingsTab::SettingsTab()
   resetEqualizer->setMarginTop(8);
   resetEqualizer->setWidth(190);
   content->addView(resetEqualizer);
+
+  auto* appearanceHeader = new brls::Header();
+  appearanceHeader->setTitle("Appearance");
+  appearanceHeader->setMarginTop(16);
+  content->addView(appearanceHeader);
+  auto* animatedBackground = new brls::BooleanCell();
+  animatedBackground->init(
+      "Animated RGB player background", settings.animatedPlayerBackground,
+      [](bool enabled) {
+        swsettings::setAnimatedPlayerBackgroundEnabled(enabled);
+        brls::Application::notify(
+            enabled ? "Animated player background enabled"
+                    : "Black player background restored");
+      });
+  content->addView(animatedBackground);
+  auto* appearanceHelp = swui::makeStatePanel(
+      "Slow color transition",
+      "Uses a subtle, slowly changing RGB gradient behind Now Playing and "
+      "the full-screen player. Disabled by default.");
+  appearanceHelp->setMarginTop(8);
+  content->addView(appearanceHelp);
 
   auto* aboutHeader = new brls::Header();
   aboutHeader->setTitle("Application");

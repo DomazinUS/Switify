@@ -82,6 +82,23 @@ int main() {
   assert(message.sequence == 4);
   assert(!core.tryPop(message));
 
+  // Explicit state controls are coalesced while the engine thread is busy.
+  // Only the newest requested state may be replayed later.
+  assert(core.submit(SwitifyIpcCommand_Play, 0, 109) ==
+         SwitifyControlResult_Ok);
+  assert(core.submit(SwitifyIpcCommand_Pause, 0, 110) ==
+         SwitifyControlResult_Ok);
+  assert(core.submit(SwitifyIpcCommand_SetVolume, 200, 111) ==
+         SwitifyControlResult_Ok);
+  assert(core.submit(SwitifyIpcCommand_SetVolume, 650, 112) ==
+         SwitifyControlResult_Ok);
+  assert(core.tryPop(message));
+  assert(message.command == SwitifyIpcCommand_Pause);
+  assert(core.tryPop(message));
+  assert(message.command == SwitifyIpcCommand_SetVolume);
+  assert(message.value == 650);
+  assert(!core.tryPop(message));
+
   core.publishRepeat(SwitifyRepeatMode_One, 108);
   status = core.snapshot();
   assert(status.flags & SwitifyStatusFlag_RepeatOne);

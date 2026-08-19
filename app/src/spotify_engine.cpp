@@ -320,8 +320,11 @@ constexpr int PodcastArtworkWidth = DefaultArtworkWidth;
 #else
 // Podcast art is displayed in a large detail panel by the full NRO. The
 // background service deliberately retains the smaller choice above so the
-// overlay does not download or cache larger files.
-constexpr int PodcastArtworkWidth = 640;
+// overlay does not download or cache larger files. A deliberately distant
+// target makes the existing nearest-width selector choose the largest source
+// Spotify supplies instead of a tiny source that happens to be numerically
+// closer to 640 px.
+constexpr int PodcastArtworkWidth = std::numeric_limits<int>::max() / 4;
 #endif
 
 std::string pickImage(const Json& images,
@@ -3066,6 +3069,72 @@ void SpotifyEngine::search(const std::string& query,
     } catch (const std::exception& error) {
       result.error = error.what();
       nxlog::pushf("Search failed: %s", error.what());
+    }
+    cb(std::move(result));
+  });
+}
+
+void SpotifyEngine::fetchLyrics(
+    const std::string& trackUriOrId,
+    std::function<void(Result<LyricsData>)> cb) {
+  launchWorker([this, trackUriOrId, cb = std::move(cb)] {
+    Result<LyricsData> result;
+    if (currentState != State::Ready) {
+      result.error = "Spotify is still connecting";
+      cb(std::move(result));
+      return;
+    }
+    const std::string trackId = idFromUri(trackUriOrId);
+    if (trackId.empty()) {
+      result.error = "Lyrics are unavailable for this item";
+      cb(std::move(result));
+      return;
+    }
+    try {
+      const std::string url =
+          "https://spclient.wg.spotify.com/color-lyrics/v2/track/" +
+          urlEncode(trackId) +
+          "?format=json&vocalRemoval=false&market=from_token";
+      const auto payload = Json::parse(connectRequest(url));
+      const auto lyrics = payload.find("lyrics");
+      if (lyrics == payload.end() || !lyrics->is_object())
+        throw std::runtime_error("Lyrics are unavailable for this track");
+      result.value.synced = lyrics->value("syncType", std::string()) ==
+                            "LINE_SYNCED";
+      result.value.provider = lyrics->value("provider", std::string());
+      const auto lines = lyrics->find("lines");
+      if (lines == lyrics->end() || !lines->is_array())
+        throw std::runtime_error("Lyrics are unavailable for this track");
+      for (const auto& line : *lines) {
+        if (!line.is_object()) continue;
+        LyricLine parsed;
+        parsed.words = line.value("words", std::string());
+        const auto start = line.find("startTimeMs");
+        try {
+          if (start != line.end() && start->is_string())
+            parsed.startTimeMs =
+                static_cast<uint32_t>(std::stoul(start->get<std::string>()));
+          else if (start != line.end() && start->is_number_unsigned())
+            parsed.startTimeMs = start->get<uint32_t>();
+          else if (start != line.end() && start->is_number_integer())
+            parsed.startTimeMs = static_cast<uint32_t>(
+                std::max<int64_t>(0, start->get<int64_t>()));
+        } catch (...) {
+          parsed.startTimeMs = 0;
+        }
+        if (!parsed.words.empty())
+          result.value.lines.push_back(std::move(parsed));
+      }
+      if (result.value.lines.empty())
+        throw std::runtime_error("Lyrics are unavailable for this track");
+      nxlog::pushf("Lyrics loaded: %d lines, provider=%s",
+                   static_cast<int>(result.value.lines.size()),
+                   result.value.provider.empty()
+                       ? "unspecified"
+                       : result.value.provider.c_str());
+    } catch (const std::exception& error) {
+      result.error = error.what();
+      nxlog::pushf("Lyrics unavailable: %s", error.what());
     }
     cb(std::move(result));
   });

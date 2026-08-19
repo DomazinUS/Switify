@@ -262,6 +262,40 @@ SwitifyControlResult ServiceCore::submit(SwitifyIpcCommand command,
   SwitifyControlResult result = validate(command, value);
   if (result == SwitifyControlResult_Ok && !acceptingCommands)
     result = SwitifyControlResult_BackendUnavailable;
+
+  // State-setting controls are idempotent. If the UI updates them faster than
+  // the engine thread consumes its mailbox, retain only the newest requested
+  // state. This prevents stale Play/Pause, seek, volume, Shuffle, and Repeat
+  // commands from being replayed after the UI has already moved on.
+  if (result == SwitifyControlResult_Ok) {
+    const bool replaceable =
+        command == SwitifyIpcCommand_Play ||
+        command == SwitifyIpcCommand_Pause ||
+        command == SwitifyIpcCommand_SetVolume ||
+        command == SwitifyIpcCommand_Seek ||
+        command == SwitifyIpcCommand_SetShuffle ||
+        command == SwitifyIpcCommand_SetRepeatMode ||
+        command == SwitifyIpcCommand_SetAudioQuality;
+    if (replaceable) {
+      for (size_t offset = 0; offset < commandCount; ++offset) {
+        const size_t index = (commandHead + offset) % commands.size();
+        const auto queued = commands[index].command;
+        const bool sameStateFamily =
+            queued == command ||
+            ((command == SwitifyIpcCommand_Play ||
+              command == SwitifyIpcCommand_Pause) &&
+             (queued == SwitifyIpcCommand_Play ||
+              queued == SwitifyIpcCommand_Pause));
+        if (!sameStateFamily) continue;
+        commands[index].command = command;
+        commands[index].value = value;
+        commands[index].sequence = nextCommandSequence++;
+        status.last_result = SwitifyControlResult_Ok;
+        changedLocked(monotonicMs);
+        return SwitifyControlResult_Ok;
+      }
+    }
+  }
   if (result == SwitifyControlResult_Ok &&
       commandCount == commands.size())
     result = SwitifyControlResult_Busy;

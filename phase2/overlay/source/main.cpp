@@ -425,13 +425,14 @@ void stopService() {
 }
 
 template <typename Command>
-void dispatchControl(const char* description, Command command) {
+bool dispatchControl(const char* description, Command command) {
   if (!controlsAvailable()) {
     feedbackText = "Playback controls are not ready";
-    return;
+    return false;
   }
   const Result result = command();
   feedbackText = R_SUCCEEDED(result) ? description : resultText(result);
+  return R_SUCCEEDED(result);
 }
 
 std::string clipped(std::string value, size_t maximum) {
@@ -744,17 +745,19 @@ class PlayerElement final : public tsl::elm::Element {
     const int64_t target = std::clamp<int64_t>(
         static_cast<int64_t>(currentStatus.position_ms) + delta, 0,
         currentStatus.duration_ms);
-    dispatchControl("Position changed", [target] {
-      return switifyIpcSeek(static_cast<uint32_t>(target));
-    });
+    if (dispatchControl("Position changed", [target] {
+          return switifyIpcSeek(static_cast<uint32_t>(target));
+        }))
+      currentStatus.position_ms = static_cast<uint32_t>(target);
   }
 
   void changeVolume(int32_t delta) {
     const int32_t value = std::clamp<int32_t>(
         static_cast<int32_t>(currentStatus.volume_permille) + delta, 0, 1000);
-    dispatchControl("Volume changed", [value] {
-      return switifyIpcSetVolume(static_cast<uint32_t>(value));
-    });
+    if (dispatchControl("Volume changed", [value] {
+          return switifyIpcSetVolume(static_cast<uint32_t>(value));
+        }))
+      currentStatus.volume_permille = static_cast<uint32_t>(value);
   }
 
   void toggleRepeat() {
@@ -767,14 +770,26 @@ class PlayerElement final : public tsl::elm::Element {
       mode = SwitifyRepeatMode_Off;
       message = "Repeat off";
     }
-    dispatchControl(message,
-                    [mode] { return switifyIpcSetRepeatMode(mode); });
+    if (dispatchControl(message,
+                        [mode] { return switifyIpcSetRepeatMode(mode); })) {
+      currentStatus.flags &= ~(SwitifyStatusFlag_RepeatAll |
+                               SwitifyStatusFlag_RepeatOne);
+      if (mode == SwitifyRepeatMode_All)
+        currentStatus.flags |= SwitifyStatusFlag_RepeatAll;
+      else if (mode == SwitifyRepeatMode_One)
+        currentStatus.flags |= SwitifyStatusFlag_RepeatOne;
+    }
   }
 
   void toggleShuffle() {
     const bool enabled = !(currentStatus.flags & SwitifyStatusFlag_Shuffle);
-    dispatchControl(enabled ? "Shuffle enabled" : "Shuffle disabled",
-                    [enabled] { return switifyIpcSetShuffle(enabled); });
+    if (dispatchControl(enabled ? "Shuffle enabled" : "Shuffle disabled",
+                        [enabled] { return switifyIpcSetShuffle(enabled); })) {
+      if (enabled)
+        currentStatus.flags |= SwitifyStatusFlag_Shuffle;
+      else
+        currentStatus.flags &= ~SwitifyStatusFlag_Shuffle;
+    }
   }
 
   void activate(int index) {
@@ -785,9 +800,17 @@ class PlayerElement final : public tsl::elm::Element {
       case 1:
         dispatchControl("Previous track", switifyIpcPrevious);
         break;
-      case 2:
-        dispatchControl("Play / Pause", switifyIpcPlayPause);
+      case 2: {
+        const bool playing = currentStatus.playback_state ==
+                             SwitifyPlaybackState_Playing;
+        if (dispatchControl(playing ? "Paused" : "Playing",
+                            playing ? switifyIpcPause : switifyIpcPlay)) {
+          currentStatus.playback_state =
+              playing ? SwitifyPlaybackState_Paused
+                      : SwitifyPlaybackState_Playing;
+        }
         break;
+      }
       case 3:
         dispatchControl("Next track", switifyIpcNext);
         break;
@@ -1328,6 +1351,23 @@ class SwitifyOverlay final : public tsl::Overlay {
   void exitServices() override {
     switify::artwork::shutdown();
     disconnectIpc();
+  }
+
+  void onHide() override {
+    // The playback engine is a separate Atmosphere process and continues
+    // normally. Release every overlay-owned worker, BSD session, and IPC
+    // handle before Ultrahand returns to the game or HOME menu.
+    switify::artwork::shutdown();
+    disconnectIpc();
+  }
+
+  void onShow() override {
+    refreshServiceState(false);
+    if (connectionState != ConnectionState::Connected &&
+        connectionState != ConnectionState::Incompatible) {
+      beginAutomaticStartup();
+      maintainAutomaticStartup();
+    }
   }
 
   std::unique_ptr<tsl::Gui> loadInitialGui() override {

@@ -293,11 +293,16 @@ std::string formatDuration(uint32_t milliseconds) {
          (seconds % 60 < 10 ? "0" : "") + std::to_string(seconds % 60);
 }
 
-void loadRemoteImage(brls::Image* image, const std::string& url) {
+void loadRemoteImage(brls::Image* image, const std::string& url,
+                     int preferredSize) {
   if (!image || url.empty()) return;
   std::string resolvedUrl = url;
   const auto imagePath = url.find("/image/");
-  if (imagePath != std::string::npos &&
+  // Small cards use Spotify's 300 px mosaic endpoint to avoid oversized
+  // downloads. Large player/detail artwork must retain the original selected
+  // CDN source; forcing it through /300 was the reason podcast banners stayed
+  // visibly pixelated even after selecting a larger source URL.
+  if (preferredSize <= 300 && imagePath != std::string::npos &&
       (url.find("spotifycdn.com") != std::string::npos ||
        url.find("i.scdn.co") != std::string::npos)) {
     const std::string imageId = url.substr(imagePath + 7);

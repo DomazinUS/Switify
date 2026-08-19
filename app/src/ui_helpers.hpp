@@ -20,7 +20,8 @@ NVGcolor accent();
 NVGcolor danger();
 
 std::string formatDuration(uint32_t milliseconds);
-void loadRemoteImage(brls::Image* image, const std::string& url);
+void loadRemoteImage(brls::Image* image, const std::string& url,
+                     int preferredSize = 300);
 void shutdownRemoteImages();
 
 brls::Label* makeLabel(const std::string& text, float size, NVGcolor color,

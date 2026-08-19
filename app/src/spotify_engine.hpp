@@ -153,6 +153,17 @@ class SpotifyEngine {
     std::vector<Collection> podcasts;
   };
 
+  struct LyricLine {
+    uint32_t startTimeMs = 0;
+    std::string words;
+  };
+
+  struct LyricsData {
+    std::vector<LyricLine> lines;
+    bool synced = false;
+    std::string provider;
+  };
+
   template <typename T>
   struct Result {
     T value{};
@@ -219,6 +230,8 @@ class SpotifyEngine {
       std::function<void(Result<TrackPage>)> cb);
   void search(const std::string& query,
               std::function<void(Result<SearchResults>)> cb);
+  void fetchLyrics(const std::string& trackUriOrId,
+                   std::function<void(Result<LyricsData>)> cb);
   void setTrackSaved(const std::string& uri, bool saved,
                      std::function<void(Result<bool>)> cb);
 
