@@ -1614,7 +1614,10 @@ bool SpotifyEngine::forgetCredentials() {
 void SpotifyEngine::launchWorker(std::function<void()> work) {
   // Reap completed joinable threads during normal operation. Keeping every
   // finished std::thread until shutdown retained per-thread resources and
-  // amplified an earlier UI retry loop into a GPU/heap OOM.
+  // amplified an earlier UI retry loop into a GPU/heap OOM. Join reaped
+  // threads before constructing the replacement: if std::thread creation
+  // fails under memory pressure, destroying a local joinable thread would
+  // call std::terminate and kill the entire background service.
   std::vector<std::thread> finished;
   {
     std::lock_guard<std::mutex> lock(workerMutex);
@@ -1627,25 +1630,40 @@ void SpotifyEngine::launchWorker(std::function<void()> work) {
         ++worker;
       }
     }
-
-    auto completed = std::make_shared<std::atomic_bool>(false);
-    DataWorker next;
-    next.completed = completed;
-    next.thread = std::thread(
-        [work = std::move(work), completed] {
-          try {
-            work();
-          } catch (const std::exception& error) {
-            nxlog::pushf("Unhandled data worker error: %s", error.what());
-          } catch (...) {
-            nxlog::push("Unhandled data worker error");
-          }
-          completed->store(true);
-        });
-    dataWorkers.emplace_back(std::move(next));
   }
   for (auto& thread : finished) {
     if (thread.joinable()) thread.join();
+  }
+
+  auto completed = std::make_shared<std::atomic_bool>(false);
+  auto task = std::make_shared<std::function<void()>>(std::move(work));
+  const auto runTask = [task, completed] {
+    try {
+      (*task)();
+    } catch (const std::exception& error) {
+      nxlog::pushf("Unhandled data worker error: %s", error.what());
+    } catch (...) {
+      nxlog::push("Unhandled data worker error");
+    }
+    completed->store(true);
+  };
+
+  DataWorker next;
+  next.completed = completed;
+  try {
+    next.thread = std::thread(
+        [runTask] { runTask(); });
+  } catch (const std::exception& error) {
+    // A browse request is more useful running synchronously than leaving the
+    // overlay permanently Loading or terminating the service. This path is
+    // exceptional; normal requests still use a worker thread.
+    nxlog::pushf("Data worker start failed; running inline: %s", error.what());
+    runTask();
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(workerMutex);
+    dataWorkers.emplace_back(std::move(next));
   }
 }
 
@@ -2247,6 +2265,7 @@ bool SpotifyEngine::waitForApiRateLimitWindow() {
 
 void SpotifyEngine::fetchDashboard(
     std::function<void(Result<HomeData>)> cb, bool forceRefresh) {
+#ifndef SWITIFY_BACKGROUND_SERVICE
   if (!forceRefresh) {
     Result<HomeData> cached;
     {
@@ -2262,6 +2281,9 @@ void SpotifyEngine::fetchDashboard(
       return;
     }
   }
+#else
+  (void)forceRefresh;
+#endif
   launchWorker([this, cb = std::move(cb)] {
     Result<HomeData> result;
     if (currentState != State::Ready) {
@@ -2528,11 +2550,13 @@ void SpotifyEngine::fetchDashboard(
                  static_cast<int>(result.value.shelves.size()),
                  result.value.warning.empty() ? "" : " | ",
                  result.value.warning.c_str());
+#ifndef SWITIFY_BACKGROUND_SERVICE
     if (result.error.empty()) {
       std::lock_guard<std::mutex> lock(dataMutex);
       dashboardCache = result.value;
       hasDashboardCache = true;
     }
+#endif
     // The callback owns this request's UI update. Broadcasting another engine
     // update here used to make Home interpret an error/empty result as a fresh
     // first load and launch an unbounded refresh loop.
@@ -2542,6 +2566,7 @@ void SpotifyEngine::fetchDashboard(
 
 void SpotifyEngine::fetchLibrary(
     std::function<void(Result<LibraryData>)> cb, bool forceRefresh) {
+#ifndef SWITIFY_BACKGROUND_SERVICE
   if (!forceRefresh) {
     Result<LibraryData> cached;
     {
@@ -2557,6 +2582,9 @@ void SpotifyEngine::fetchLibrary(
       return;
     }
   }
+#else
+  (void)forceRefresh;
+#endif
   launchWorker([this, cb = std::move(cb)] {
     Result<LibraryData> result;
     if (currentState != State::Ready) {
@@ -2619,11 +2647,13 @@ void SpotifyEngine::fetchLibrary(
                  static_cast<int>(result.value.albums.size()),
                  static_cast<int>(result.value.podcasts.size()),
                  errors.empty() ? "" : " | ", errors.c_str());
+#ifndef SWITIFY_BACKGROUND_SERVICE
     if (result.error.empty()) {
       std::lock_guard<std::mutex> lock(dataMutex);
       libraryCache = result.value;
       hasLibraryCache = true;
     }
+#endif
     cb(std::move(result));
   });
 }

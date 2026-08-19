@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <new>
 
 namespace switify::phase2 {
 namespace {
@@ -356,14 +357,15 @@ void BackgroundBackend::requestHome() {
           failBrowse(generation, result.error);
           return;
         }
+        BrowsePage page = buildHomeRoot(result.value);
         {
           std::scoped_lock lock(browseMutex);
           if (generation != activeBrowseGeneration) return;
-          homeCache = result.value;
+          homeCache = std::move(result.value);
           libraryCache = {};
           searchCache = {};
         }
-        completeBrowse(generation, buildHomeRoot(result.value));
+        completeBrowse(generation, std::move(page));
       });
 }
 
@@ -377,14 +379,15 @@ void BackgroundBackend::requestLibrary() {
           failBrowse(generation, result.error);
           return;
         }
+        BrowsePage page = buildLibraryRoot(result.value);
         {
           std::scoped_lock lock(browseMutex);
           if (generation != activeBrowseGeneration) return;
-          libraryCache = result.value;
+          libraryCache = std::move(result.value);
           homeCache = {};
           searchCache = {};
         }
-        completeBrowse(generation, buildLibraryRoot(result.value));
+        completeBrowse(generation, std::move(page));
       });
 }
 
@@ -402,15 +405,16 @@ void BackgroundBackend::requestSearch(const std::string& query) {
           failBrowse(generation, result.error);
           return;
         }
+        BrowsePage page = buildSearchRoot(result.value, query);
         {
           std::scoped_lock lock(browseMutex);
           if (generation != activeBrowseGeneration) return;
-          searchCache = result.value;
+          searchCache = std::move(result.value);
           homeCache = {};
           libraryCache = {};
           searchQuery = query;
         }
-        completeBrowse(generation, buildSearchRoot(result.value, query));
+        completeBrowse(generation, std::move(page));
       });
 }
 
@@ -855,27 +859,59 @@ void BackgroundBackend::run() {
   nextReconnect = std::chrono::steady_clock::now() + ReconnectInterval;
 
   while (running.load()) {
-    ControlMessage message;
-    for (size_t processed = 0; processed < 8 && core.tryPop(message);
-         ++processed)
-      process(message);
+    try {
+      ControlMessage message;
+      for (size_t processed = 0; processed < 8 && core.tryPop(message);
+           ++processed)
+        process(message);
 
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= nextSnapshot) {
-      publishSnapshot();
-      nextSnapshot = now + SnapshotInterval;
-    }
-    if (now >= nextResourceLog) {
-      nxlog::pushHeapUsage("periodic");
-      nextResourceLog = now + ResourceLogInterval;
-    }
-    if (engine.state() == SpotifyEngine::State::Error &&
-        now >= nextReconnect) {
-      nxlog::push("Background Spotify reconnect requested");
-      engine.retryConnection();
-      nextReconnect = now + ReconnectInterval;
-    } else if (engine.state() != SpotifyEngine::State::Error) {
-      nextReconnect = now + ReconnectInterval;
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= nextSnapshot) {
+        publishSnapshot();
+        nextSnapshot = now + SnapshotInterval;
+      }
+      if (now >= nextResourceLog) {
+        nxlog::pushHeapUsage("periodic");
+        nextResourceLog = now + ResourceLogInterval;
+      }
+      if (engine.state() == SpotifyEngine::State::Error &&
+          now >= nextReconnect) {
+        nxlog::push("Background Spotify reconnect requested");
+        engine.retryConnection();
+        nextReconnect = now + ReconnectInterval;
+      } else if (engine.state() != SpotifyEngine::State::Error) {
+        nextReconnect = now + ReconnectInterval;
+      }
+    } catch (const std::bad_alloc&) {
+      uint64_t generation = 0;
+      {
+        std::scoped_lock lock(browseMutex);
+        generation = activeBrowseGeneration;
+      }
+      nxlog::push("Background request ran out of memory; service retained");
+      failBrowse(generation, "Spotify content exceeded available memory");
+      core.publishResult(SwitifyControlResult_BackendUnavailable,
+                         monotonicMs());
+    } catch (const std::exception& error) {
+      uint64_t generation = 0;
+      {
+        std::scoped_lock lock(browseMutex);
+        generation = activeBrowseGeneration;
+      }
+      nxlog::pushf("Background request failed safely: %s", error.what());
+      failBrowse(generation, error.what());
+      core.publishResult(SwitifyControlResult_BackendUnavailable,
+                         monotonicMs());
+    } catch (...) {
+      uint64_t generation = 0;
+      {
+        std::scoped_lock lock(browseMutex);
+        generation = activeBrowseGeneration;
+      }
+      nxlog::push("Background request failed safely");
+      failBrowse(generation, "Unknown background request failure");
+      core.publishResult(SwitifyControlResult_BackendUnavailable,
+                         monotonicMs());
     }
     std::this_thread::sleep_for(PollInterval);
   }
