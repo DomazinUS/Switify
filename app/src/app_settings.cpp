@@ -23,7 +23,9 @@ constexpr const char* kSettingsFile = "settings.json";
 std::atomic_bool gPlaybackShortcuts{false};
 std::atomic<float> gOutputVolume{0.8f};
 std::atomic_bool gHighQuality{false};
-std::atomic_bool gAnimatedPlayerBackground{false};
+std::atomic<int> gPlayerBackgroundMode{
+    static_cast<int>(PlayerBackgroundMode::Off)};
+std::atomic_bool gShowSyncedLyricsInFullPlayer{false};
 std::atomic_bool gEqualizerEnabled{false};
 std::atomic<float> gBassDb{0.0f};
 std::atomic<float> gMidDb{0.0f};
@@ -41,11 +43,14 @@ void save() {
 #endif
   const auto snapshot = get();
   nlohmann::json json = {
-      {"version", 3},
+      {"version", 4},
       {"playback_shortcuts", snapshot.playbackShortcuts},
       {"output_volume", snapshot.outputVolume},
       {"audio_quality", snapshot.highQuality ? "high" : "normal"},
-      {"animated_player_background", snapshot.animatedPlayerBackground},
+      {"player_background_mode",
+       static_cast<int>(snapshot.playerBackgroundMode)},
+      {"show_synced_lyrics_in_full_player",
+       snapshot.showSyncedLyricsInFullPlayer},
       {"equalizer_enabled", snapshot.equalizerEnabled},
       {"bass_db", snapshot.bassDb},
       {"mid_db", snapshot.midDb},
@@ -66,8 +71,16 @@ void load() {
     gOutputVolume = clampVolume(json.value("output_volume", 0.8f));
     gHighQuality = json.value("audio_quality", std::string("normal")) ==
                    "high";
-    gAnimatedPlayerBackground =
-        json.value("animated_player_background", false);
+    int backgroundMode = json.value(
+        "player_background_mode",
+        json.value("animated_player_background", false)
+            ? static_cast<int>(PlayerBackgroundMode::Gradient)
+            : static_cast<int>(PlayerBackgroundMode::Off));
+    gPlayerBackgroundMode = std::clamp(
+        backgroundMode, static_cast<int>(PlayerBackgroundMode::Off),
+        static_cast<int>(PlayerBackgroundMode::Solid));
+    gShowSyncedLyricsInFullPlayer =
+        json.value("show_synced_lyrics_in_full_player", false);
     gEqualizerEnabled = json.value("equalizer_enabled", false);
     gBassDb = clampDb(json.value("bass_db", 0.0f));
     gMidDb = clampDb(json.value("mid_db", 0.0f));
@@ -82,7 +95,10 @@ Snapshot get() {
   snapshot.playbackShortcuts = gPlaybackShortcuts.load();
   snapshot.outputVolume = gOutputVolume.load();
   snapshot.highQuality = gHighQuality.load();
-  snapshot.animatedPlayerBackground = gAnimatedPlayerBackground.load();
+  snapshot.playerBackgroundMode =
+      static_cast<PlayerBackgroundMode>(gPlayerBackgroundMode.load());
+  snapshot.showSyncedLyricsInFullPlayer =
+      gShowSyncedLyricsInFullPlayer.load();
   snapshot.equalizerEnabled = gEqualizerEnabled.load();
   snapshot.bassDb = gBassDb.load();
   snapshot.midDb = gMidDb.load();
@@ -107,12 +123,23 @@ void setHighQuality(bool enabled) {
   save();
 }
 
-bool animatedPlayerBackgroundEnabled() {
-  return gAnimatedPlayerBackground.load();
+PlayerBackgroundMode playerBackgroundMode() {
+  return static_cast<PlayerBackgroundMode>(gPlayerBackgroundMode.load());
 }
 
-void setAnimatedPlayerBackgroundEnabled(bool enabled) {
-  gAnimatedPlayerBackground = enabled;
+void setPlayerBackgroundMode(PlayerBackgroundMode mode) {
+  gPlayerBackgroundMode = std::clamp(
+      static_cast<int>(mode), static_cast<int>(PlayerBackgroundMode::Off),
+      static_cast<int>(PlayerBackgroundMode::Solid));
+  save();
+}
+
+bool showSyncedLyricsInFullPlayer() {
+  return gShowSyncedLyricsInFullPlayer.load();
+}
+
+void setShowSyncedLyricsInFullPlayer(bool enabled) {
+  gShowSyncedLyricsInFullPlayer = enabled;
   save();
 }
 

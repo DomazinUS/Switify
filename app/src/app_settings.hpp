@@ -2,11 +2,14 @@
 
 namespace swsettings {
 
+enum class PlayerBackgroundMode { Off = 0, Gradient = 1, Solid = 2 };
+
 struct Snapshot {
   bool playbackShortcuts = false;
   float outputVolume = 0.8f;
   bool highQuality = false;
-  bool animatedPlayerBackground = false;
+  PlayerBackgroundMode playerBackgroundMode = PlayerBackgroundMode::Off;
+  bool showSyncedLyricsInFullPlayer = false;
   bool equalizerEnabled = false;
   float bassDb = 0.0f;
   float midDb = 0.0f;
@@ -22,8 +25,11 @@ void setPlaybackShortcutsEnabled(bool enabled);
 void setOutputVolume(float volume);
 void setHighQuality(bool enabled);
 
-bool animatedPlayerBackgroundEnabled();
-void setAnimatedPlayerBackgroundEnabled(bool enabled);
+PlayerBackgroundMode playerBackgroundMode();
+void setPlayerBackgroundMode(PlayerBackgroundMode mode);
+
+bool showSyncedLyricsInFullPlayer();
+void setShowSyncedLyricsInFullPlayer(bool enabled);
 
 void setEqualizer(bool enabled, float bassDb, float midDb, float trebleDb);
 

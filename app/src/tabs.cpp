@@ -26,12 +26,23 @@ std::string equalizerDbText(float db) {
   return std::to_string(rounded) + " dB";
 }
 
-void drawAnimatedPlayerBackground(NVGcontext* vg, float x, float y,
-                                  float width, float height) {
+void drawAnimatedPlayerBackground(
+    NVGcontext* vg, float x, float y, float width, float height,
+    swsettings::PlayerBackgroundMode mode) {
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now()
                                        .time_since_epoch())
           .count();
+  if (mode == swsettings::PlayerBackgroundMode::Solid) {
+    const float hue =
+        static_cast<float>(std::fmod(seconds / 45.0, 1.0));
+    nvgBeginPath(vg);
+    nvgRect(vg, x, y, width, height);
+    nvgFillColor(vg, nvgHSL(hue, 0.62f, 0.14f));
+    nvgFill(vg);
+    return;
+  }
+
   const double phase = seconds * 0.12;
   const auto channel = [](double value) -> unsigned char {
     return static_cast<unsigned char>(
@@ -47,6 +58,22 @@ void drawAnimatedPlayerBackground(NVGcontext* vg, float x, float y,
   nvgFillPaint(vg, nvgLinearGradient(vg, x, y, x + width, y + height,
                                      first, second));
   nvgFill(vg);
+}
+
+size_t activeLyricLine(const std::vector<SpotifyEngine::LyricLine>& lines,
+                       uint32_t positionMs) {
+  if (lines.empty() || positionMs < lines.front().startTimeMs)
+    return static_cast<size_t>(-1);
+  size_t low = 0;
+  size_t high = lines.size();
+  while (low < high) {
+    const size_t middle = low + (high - low) / 2;
+    if (lines[middle].startTimeMs <= positionMs)
+      low = middle + 1;
+    else
+      high = middle;
+  }
+  return low == 0 ? static_cast<size_t>(-1) : low - 1;
 }
 
 brls::Box* makeHeading(const std::string& title, const std::string& subtitle,
@@ -322,7 +349,8 @@ void showInformationPage(
 class LyricsView final : public brls::Box {
  public:
   explicit LyricsView(SpotifyEngine::NowPlaying snapshot)
-      : alive(std::make_shared<std::atomic_bool>(true)) {
+      : alive(std::make_shared<std::atomic_bool>(true)),
+        sourceUri(snapshot.uri) {
     setAxis(brls::Axis::COLUMN);
     setDimensions(brls::Application::contentWidth,
                   brls::Application::contentHeight);
@@ -346,6 +374,23 @@ class LyricsView final : public brls::Box {
     back->setWidth(130);
     top->addView(back);
     addView(top);
+
+    livePanel = new brls::Box();
+    livePanel->setAxis(brls::Axis::COLUMN);
+    livePanel->setPadding(14, swui::kPagePadding, 16, swui::kPagePadding);
+    livePanel->setBackgroundColor(nvgRGB(16, 38, 34));
+    livePanel->setVisibility(brls::Visibility::GONE);
+    liveCaption = swui::makeLabel("LINE-SYNCED", 13, swui::accent(), true);
+    liveCurrent =
+        swui::makeLabel("Waiting for the next line…", 24,
+                        swui::textPrimary(), true);
+    liveCurrent->setMarginTop(6);
+    liveNext = swui::makeLabel("", 16, swui::textSecondary(), true);
+    liveNext->setMarginTop(5);
+    livePanel->addView(liveCaption);
+    livePanel->addView(liveCurrent);
+    livePanel->addView(liveNext);
+    addView(livePanel);
 
     auto* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1.0f);
@@ -372,23 +417,35 @@ class LyricsView final : public brls::Box {
               renderError(result.error);
               return;
             }
+            lyrics = std::move(result.value);
             content->clearViews();
             auto* source = swui::makeStatePanel(
-                result.value.synced ? "Line-synced lyrics" : "Lyrics",
-                result.value.provider.empty()
+                lyrics.synced ? "Line-synced lyrics" : "Lyrics",
+                lyrics.provider.empty()
                     ? "Provided by Spotify"
-                    : "Provided by " + result.value.provider);
+                    : "Provided by " + lyrics.provider);
             source->setFocusable(true);
             content->addView(source);
-            for (const auto& line : result.value.lines) {
+            lyricRows.clear();
+            for (const auto& line : lyrics.lines) {
               auto* row = swui::makeStatePanel(
                   line.words,
-                  result.value.synced
-                      ? swui::formatDuration(line.startTimeMs)
-                      : std::string());
+                  lyrics.synced ? swui::formatDuration(line.startTimeMs)
+                                : std::string());
               row->setFocusable(true);
               row->setMarginTop(8);
               content->addView(row);
+              lyricRows.push_back(row);
+            }
+            livePanel->setVisibility(lyrics.synced
+                                         ? brls::Visibility::VISIBLE
+                                         : brls::Visibility::GONE);
+            if (lyrics.synced) {
+              liveCaption->setText(
+                  lyrics.provider.empty()
+                      ? "LINE-SYNCED LYRICS"
+                      : "LINE-SYNCED · " + lyrics.provider);
+              updateSyncedLyrics(true);
             }
           });
         });
@@ -396,8 +453,45 @@ class LyricsView final : public brls::Box {
 
   ~LyricsView() override { alive->store(false); }
 
+  void draw(NVGcontext* vg, float x, float y, float width, float height,
+            brls::Style style, brls::FrameContext* ctx) override {
+    if (std::chrono::steady_clock::now() - lastSyncRefresh >=
+        std::chrono::milliseconds(100)) {
+      updateSyncedLyrics(false);
+      lastSyncRefresh = std::chrono::steady_clock::now();
+    }
+    brls::Box::draw(vg, x, y, width, height, style, ctx);
+  }
+
  private:
+  void updateSyncedLyrics(bool force) {
+    if (!lyrics.synced || lyrics.lines.empty()) return;
+    const auto snapshot = SpotifyEngine::instance().nowPlaying();
+    if (!sourceUri.empty() && !snapshot.uri.empty() &&
+        sourceUri != snapshot.uri) {
+      liveCurrent->setText("The playing track changed");
+      liveNext->setText("Reopen Lyrics to follow the new song");
+      return;
+    }
+    const size_t active = activeLyricLine(lyrics.lines, snapshot.positionMs);
+    if (!force && active == activeLine) return;
+    if (activeLine < lyricRows.size())
+      lyricRows[activeLine]->setBackgroundColor(swui::surfaceRaised());
+    activeLine = active;
+    if (active < lyrics.lines.size()) {
+      liveCurrent->setText(lyrics.lines[active].words);
+      lyricRows[active]->setBackgroundColor(nvgRGB(19, 65, 54));
+      liveNext->setText(active + 1 < lyrics.lines.size()
+                            ? lyrics.lines[active + 1].words
+                            : "End of lyrics");
+    } else {
+      liveCurrent->setText("Waiting for the first line…");
+      liveNext->setText(lyrics.lines.front().words);
+    }
+  }
+
   void renderError(const std::string& detail) {
+    livePanel->setVisibility(brls::Visibility::GONE);
     content->clearViews();
     content->addView(swui::makeStatePanel(
         "Lyrics unavailable",
@@ -407,6 +501,15 @@ class LyricsView final : public brls::Box {
   }
 
   brls::Box* content = nullptr;
+  brls::Box* livePanel = nullptr;
+  brls::Label* liveCaption = nullptr;
+  brls::Label* liveCurrent = nullptr;
+  brls::Label* liveNext = nullptr;
+  SpotifyEngine::LyricsData lyrics;
+  std::vector<brls::Box*> lyricRows;
+  std::string sourceUri;
+  size_t activeLine = static_cast<size_t>(-1);
+  std::chrono::steady_clock::time_point lastSyncRefresh{};
   std::shared_ptr<std::atomic_bool> alive;
 };
 
@@ -461,9 +564,28 @@ class TheaterView : public brls::Box {
     details->addView(artist);
     details->addView(album);
 
+    lyricsPanel = new brls::Box();
+    lyricsPanel->setAxis(brls::Axis::COLUMN);
+    lyricsPanel->setPadding(12, 16, 12, 16);
+    lyricsPanel->setMarginTop(16);
+    lyricsPanel->setCornerRadius(10);
+    lyricsPanel->setBackgroundColor(nvgRGBA(8, 12, 15, 215));
+    lyricsCaption =
+        swui::makeLabel("LINE-SYNCED LYRICS", 13, swui::accent(), true);
+    lyricsCurrent = swui::makeLabel("Loading lyrics…", 23,
+                                    swui::textPrimary(), true);
+    lyricsCurrent->setMarginTop(5);
+    lyricsNext = swui::makeLabel("", 16, swui::textSecondary(), true);
+    lyricsNext->setMarginTop(4);
+    lyricsPanel->addView(lyricsCaption);
+    lyricsPanel->addView(lyricsCurrent);
+    lyricsPanel->addView(lyricsNext);
+    lyricsPanel->setVisibility(brls::Visibility::GONE);
+    details->addView(lyricsPanel);
+
     progress = new brls::Slider();
     progress->setStep(0.18f);
-    progress->setMarginTop(26);
+    progress->setMarginTop(18);
     details->addView(progress);
     auto* timeRow = new brls::Box();
     timeRow->setAxis(brls::Axis::ROW);
@@ -597,9 +719,11 @@ class TheaterView : public brls::Box {
     if (std::chrono::steady_clock::now() - lastRefresh >
         std::chrono::milliseconds(250))
       refresh();
-    if (swsettings::animatedPlayerBackgroundEnabled()) {
+    const auto backgroundMode = swsettings::playerBackgroundMode();
+    if (backgroundMode != swsettings::PlayerBackgroundMode::Off) {
       setBackgroundColor(nvgRGBA(0, 0, 0, 0));
-      drawAnimatedPlayerBackground(vg, x, y, width, height);
+      drawAnimatedPlayerBackground(vg, x, y, width, height,
+                                   backgroundMode);
     } else {
       setBackgroundColor(nvgRGB(7, 9, 12));
     }
@@ -621,6 +745,7 @@ class TheaterView : public brls::Box {
         swui::loadRemoteImage(artwork, snapshot.imageUrl, 640);
       }
     }
+    refreshSyncedLyrics(snapshot);
     playPauseLabel->setText(snapshot.paused ? "▶" : "II");
     elapsed->setText(swui::formatDuration(snapshot.positionMs));
     duration->setText(swui::formatDuration(snapshot.durationMs));
@@ -638,6 +763,76 @@ class TheaterView : public brls::Box {
     lastRefresh = std::chrono::steady_clock::now();
   }
 
+  void refreshSyncedLyrics(const SpotifyEngine::NowPlaying& snapshot) {
+    const bool enabled = swsettings::showSyncedLyricsInFullPlayer() &&
+                         snapshot.hasTrack;
+    lyricsPanel->setVisibility(enabled ? brls::Visibility::VISIBLE
+                                       : brls::Visibility::GONE);
+    if (!enabled) return;
+    const std::string identifier =
+        snapshot.uri.empty() ? snapshot.id : snapshot.uri;
+    if (identifier.empty()) {
+      lyricsCaption->setText("LYRICS UNAVAILABLE");
+      lyricsCurrent->setText("This track has no Spotify ID");
+      lyricsNext->setText("");
+      return;
+    }
+    if (identifier != lyricsRequestedId) {
+      lyricsRequestedId = identifier;
+      theaterLyrics = {};
+      theaterActiveLine = static_cast<size_t>(-1);
+      lyricsCaption->setText("LINE-SYNCED LYRICS");
+      lyricsCurrent->setText("Loading lyrics…");
+      lyricsNext->setText("");
+      auto token = alive;
+      SpotifyEngine::instance().fetchLyrics(
+          identifier,
+          [this, token, identifier](
+              SpotifyEngine::Result<SpotifyEngine::LyricsData> result) {
+            brls::sync([this, token, identifier,
+                        result = std::move(result)]() mutable {
+              if (!token->load() || lyricsRequestedId != identifier) return;
+              if (!result.ok()) {
+                lyricsCaption->setText("LYRICS UNAVAILABLE");
+                lyricsCurrent->setText(result.error);
+                lyricsNext->setText("");
+                return;
+              }
+              theaterLyrics = std::move(result.value);
+              if (!theaterLyrics.synced) {
+                lyricsCaption->setText("UNSYNCED LYRICS");
+                lyricsCurrent->setText("Open Lyrics for the full text");
+                lyricsNext->setText("");
+                return;
+              }
+              lyricsCaption->setText(
+                  theaterLyrics.provider.empty()
+                      ? "LINE-SYNCED LYRICS"
+                      : "LINE-SYNCED · " + theaterLyrics.provider);
+              updateTheaterLyricLine(
+                  SpotifyEngine::instance().nowPlaying().positionMs, true);
+            });
+          });
+    }
+    updateTheaterLyricLine(snapshot.positionMs, false);
+  }
+
+  void updateTheaterLyricLine(uint32_t positionMs, bool force) {
+    if (!theaterLyrics.synced || theaterLyrics.lines.empty()) return;
+    const size_t active = activeLyricLine(theaterLyrics.lines, positionMs);
+    if (!force && active == theaterActiveLine) return;
+    theaterActiveLine = active;
+    if (active < theaterLyrics.lines.size()) {
+      lyricsCurrent->setText(theaterLyrics.lines[active].words);
+      lyricsNext->setText(active + 1 < theaterLyrics.lines.size()
+                              ? theaterLyrics.lines[active + 1].words
+                              : "End of lyrics");
+    } else {
+      lyricsCurrent->setText("Waiting for the first line…");
+      lyricsNext->setText(theaterLyrics.lines.front().words);
+    }
+  }
+
   brls::Image* artwork = nullptr;
   brls::Label* status = nullptr;
   brls::Label* title = nullptr;
@@ -646,12 +841,19 @@ class TheaterView : public brls::Box {
   brls::Label* elapsed = nullptr;
   brls::Label* duration = nullptr;
   brls::Label* playPauseLabel = nullptr;
+  brls::Box* lyricsPanel = nullptr;
+  brls::Label* lyricsCaption = nullptr;
+  brls::Label* lyricsCurrent = nullptr;
+  brls::Label* lyricsNext = nullptr;
   swui::ShuffleIcon* shuffleIcon = nullptr;
   swui::RepeatIcon* repeatIcon = nullptr;
   brls::Box* playPauseButton = nullptr;
   brls::Slider* progress = nullptr;
   bool updatingProgress = false;
   std::string loadedArtworkUrl;
+  std::string lyricsRequestedId;
+  SpotifyEngine::LyricsData theaterLyrics;
+  size_t theaterActiveLine = static_cast<size_t>(-1);
   SpotifyEngine::ObserverId observerId = 0;
   std::shared_ptr<std::atomic_bool> alive;
   std::chrono::steady_clock::time_point lastSeek{};
@@ -1780,12 +1982,7 @@ void NowPlayingTab::draw(NVGcontext* vg, float x, float y, float width,
   if (std::chrono::steady_clock::now() - lastRefresh >
       std::chrono::milliseconds(250))
     refresh();
-  if (swsettings::animatedPlayerBackgroundEnabled()) {
-    setBackgroundColor(nvgRGBA(0, 0, 0, 0));
-    drawAnimatedPlayerBackground(vg, x, y, width, height);
-  } else {
-    setBackgroundColor(swui::background());
-  }
+  setBackgroundColor(swui::background());
   brls::Box::draw(vg, x, y, width, height, style, ctx);
 }
 
@@ -1947,20 +2144,37 @@ SettingsTab::SettingsTab()
   appearanceHeader->setTitle("Appearance");
   appearanceHeader->setMarginTop(16);
   content->addView(appearanceHeader);
-  auto* animatedBackground = new brls::BooleanCell();
-  animatedBackground->init(
-      "Animated RGB player background", settings.animatedPlayerBackground,
-      [](bool enabled) {
-        swsettings::setAnimatedPlayerBackgroundEnabled(enabled);
+  auto* playerBackground = new brls::SelectorCell();
+  playerBackground->init(
+      "Full player background",
+      {"Black", "RGB gradient · animated", "RGB solid · animated"},
+      static_cast<int>(settings.playerBackgroundMode),
+      [](int selected) {
+        swsettings::setPlayerBackgroundMode(
+            static_cast<swsettings::PlayerBackgroundMode>(selected));
         brls::Application::notify(
-            enabled ? "Animated player background enabled"
-                    : "Black player background restored");
+            selected == 0 ? "Black full-player background selected"
+                          : "Animated full-player background selected");
       });
-  content->addView(animatedBackground);
+  content->addView(playerBackground);
+  auto* fullPlayerLyrics = new brls::BooleanCell();
+  fullPlayerLyrics->init(
+      "Line-synced lyrics in full player",
+      settings.showSyncedLyricsInFullPlayer,
+      [](bool enabled) {
+        swsettings::setShowSyncedLyricsInFullPlayer(enabled);
+        brls::Application::notify(
+            enabled ? "Full-player synced lyrics enabled"
+                    : "Full-player synced lyrics disabled");
+      });
+  fullPlayerLyrics->setMarginTop(8);
+  content->addView(fullPlayerLyrics);
   auto* appearanceHelp = swui::makeStatePanel(
-      "Slow color transition",
-      "Uses a subtle, slowly changing RGB gradient behind Now Playing and "
-      "the full-screen player. Disabled by default.");
+      "Full player options",
+      "Animated colors only affect the full player opened with +. Gradient "
+      "blends multiple colors; Solid slowly cycles one color at a time.\n"
+      "Synced lyrics follow the active Musixmatch line when Spotify provides "
+      "timing data.");
   appearanceHelp->setMarginTop(8);
   content->addView(appearanceHelp);
 

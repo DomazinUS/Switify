@@ -3090,6 +3090,19 @@ void SpotifyEngine::fetchLyrics(
       cb(std::move(result));
       return;
     }
+    bool foundCachedLyrics = false;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      const auto cached = lyricsCache.find(trackId);
+      if (cached != lyricsCache.end()) {
+        result.value = cached->second;
+        foundCachedLyrics = true;
+      }
+    }
+    if (foundCachedLyrics) {
+      cb(std::move(result));
+      return;
+    }
     try {
       const std::string url =
           "https://spclient.wg.spotify.com/color-lyrics/v2/track/" +
@@ -3127,6 +3140,11 @@ void SpotifyEngine::fetchLyrics(
       }
       if (result.value.lines.empty())
         throw std::runtime_error("Lyrics are unavailable for this track");
+      {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        if (lyricsCache.size() >= 16) lyricsCache.erase(lyricsCache.begin());
+        lyricsCache[trackId] = result.value;
+      }
       nxlog::pushf("Lyrics loaded: %d lines, provider=%s",
                    static_cast<int>(result.value.lines.size()),
                    result.value.provider.empty()

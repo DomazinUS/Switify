@@ -281,6 +281,7 @@ class SpotifyEngine {
   bool hasDashboardCache = false;
   bool hasLibraryCache = false;
   std::unordered_map<std::string, std::vector<Track>> collectionTracksCache;
+  std::unordered_map<std::string, LyricsData> lyricsCache;
   std::deque<std::string> collectionTrackCacheOrder;
   size_t cachedCollectionTrackCount = 0;
   std::unordered_map<std::string, bool> likedStateCache;
