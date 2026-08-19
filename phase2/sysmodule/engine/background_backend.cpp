@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <limits>
 
 namespace switify::phase2 {
 namespace {
@@ -24,7 +23,6 @@ constexpr const char* ArtworkUrlTemporary =
 constexpr size_t MaxBrowseItems = 32;
 constexpr size_t BrowsePageSize = 25;
 constexpr size_t RemoteTrackPageSize = 50;
-constexpr size_t GlobalShuffleWindowSize = 100;
 
 std::string itemCountText(size_t count, const char* singular,
                           const char* plural) {
@@ -148,40 +146,8 @@ void BackgroundBackend::process(const ControlMessage& message) {
       if (ready) engine.seekToMs(message.value);
       break;
     case SwitifyIpcCommand_SetShuffle:
-      if (ready && engine.nowPlaying().shuffle != (message.value != 0)) {
-        const bool enabled = message.value != 0;
+      if (ready && engine.nowPlaying().shuffle != (message.value != 0))
         engine.toggleShuffle();
-        if (!enabled) {
-          ++shufflePlaybackRequest;
-        } else {
-          SpotifyEngine::Collection collection;
-          std::vector<SpotifyEngine::Track> tracks;
-          size_t selectedIndex = 0;
-          bool selectedFound = false;
-          std::string sourceName;
-          const auto playing = engine.nowPlaying();
-          {
-            std::scoped_lock lock(browseMutex);
-            if (currentBrowsePage.remotelyPaged &&
-                currentBrowsePage.remoteCollection.kind ==
-                    SpotifyEngine::Collection::Kind::LIKED) {
-              collection = currentBrowsePage.remoteCollection;
-              sourceName = currentBrowsePage.title;
-              for (const auto& entry : currentBrowsePage.entries) {
-                if (entry.type != BrowseEntryType::Track) continue;
-                if (!selectedFound && entry.track.uri == playing.uri) {
-                  selectedIndex = tracks.size();
-                  selectedFound = true;
-                }
-                tracks.push_back(entry.track);
-              }
-            }
-          }
-          if (selectedFound)
-            startGlobalLikedShuffle(std::move(collection), std::move(tracks),
-                                    selectedIndex, std::move(sourceName), true);
-        }
-      }
       break;
     case SwitifyIpcCommand_SetRepeatMode:
       if (message.value > SwitifyRepeatMode_All) {
@@ -596,9 +562,6 @@ BackgroundBackend::BrowsePage BackgroundBackend::buildRemoteTracks(
   page.remoteOffset = tracks.offset;
   page.remoteNextOffset = tracks.nextOffset;
   page.remoteCollection = collection;
-  if (tracks.totalCount > 0)
-    page.remoteCollection.itemCount = static_cast<int>(std::min<size_t>(
-        tracks.totalCount, static_cast<size_t>(std::numeric_limits<int>::max())));
   return page;
 }
 
@@ -741,8 +704,6 @@ void BackgroundBackend::playBrowseItem(uint64_t generation,
   std::string pageTitle;
   std::vector<SpotifyEngine::Track> tracks;
   size_t trackIndex = 0;
-  SpotifyEngine::Collection remoteCollection;
-  bool globalLikedShuffle = false;
   {
     std::scoped_lock lock(browseMutex);
     if (generation != activeBrowseGeneration ||
@@ -760,58 +721,16 @@ void BackgroundBackend::playBrowseItem(uint64_t generation,
       for (const auto& entry : currentBrowsePage.entries)
         if (entry.type == BrowseEntryType::Track)
           tracks.push_back(entry.track);
-      remoteCollection = currentBrowsePage.remoteCollection;
-      globalLikedShuffle = currentBrowsePage.remotelyPaged &&
-                           remoteCollection.kind ==
-                               SpotifyEngine::Collection::Kind::LIKED &&
-                           engine.nowPlaying().shuffle;
     }
   }
-  ++shufflePlaybackRequest;
   if (playMode == BrowsePlayMode::Playlist) {
     engine.playPlaylistTrack(trackIndex);
   } else if (playMode == BrowsePlayMode::Queue) {
     engine.playQueueTrack(trackIndex);
-  } else if (globalLikedShuffle) {
-    startGlobalLikedShuffle(std::move(remoteCollection), std::move(tracks),
-                            trackIndex, pageTitle, false);
   } else {
     engine.playTracks(std::move(tracks), trackIndex, pageTitle);
   }
   nxlog::pushHeapUsage("browse play dispatched");
-}
-
-void BackgroundBackend::startGlobalLikedShuffle(
-    SpotifyEngine::Collection collection,
-    std::vector<SpotifyEngine::Track> visibleTracks, size_t selectedIndex,
-    std::string sourceName, bool preserveCurrentTrack) {
-  if (visibleTracks.empty() || selectedIndex >= visibleTracks.size()) return;
-  const std::string expectedUri = visibleTracks[selectedIndex].uri;
-  const uint64_t request = ++shufflePlaybackRequest;
-  engine.fetchShuffledCollectionWindow(
-      collection, std::move(visibleTracks), selectedIndex,
-      GlobalShuffleWindowSize,
-      [this, request, expectedUri = std::move(expectedUri),
-       sourceName = std::move(sourceName), preserveCurrentTrack](
-          SpotifyEngine::Result<std::vector<SpotifyEngine::Track>> result) {
-        if (request != shufflePlaybackRequest.load() ||
-            !engine.nowPlaying().shuffle)
-          return;
-        if (!result.ok() || result.value.empty()) {
-          nxlog::pushf("Global Liked Songs shuffle failed: %s",
-                       result.error.c_str());
-          return;
-        }
-
-        uint32_t positionMs = 0;
-        if (preserveCurrentTrack) {
-          const auto playing = engine.nowPlaying();
-          if (playing.uri != expectedUri) return;
-          positionMs = playing.positionMs;
-        }
-        engine.playTracks(std::move(result.value), 0, sourceName, positionMs);
-        nxlog::push("Global Liked Songs shuffle started");
-      });
 }
 
 void BackgroundBackend::browseCurrentPlaylist(bool queue) {

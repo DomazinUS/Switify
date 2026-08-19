@@ -32,6 +32,7 @@ constexpr const char* ArtworkUrlPath =
     "sdmc:/config/Switify/current-artwork-url";
 constexpr auto RefreshInterval = std::chrono::milliseconds(500);
 constexpr auto BrowseRefreshInterval = std::chrono::milliseconds(200);
+constexpr auto InputClaimInterval = std::chrono::milliseconds(200);
 constexpr unsigned AutomaticLaunchAttempts = 4;
 constexpr auto StartupReadinessTimeout = std::chrono::seconds(6);
 constexpr auto StartupRelaunchDelay = std::chrono::milliseconds(750);
@@ -57,6 +58,14 @@ unsigned automaticLaunchAttempt = 0;
 std::chrono::steady_clock::time_point nextAutomaticLaunch{};
 uint64_t automaticObservedPid = 0;
 std::chrono::steady_clock::time_point automaticObservedAt{};
+std::chrono::steady_clock::time_point nextInputClaim{};
+
+void claimExclusiveInput(bool force = false) {
+  const auto now = std::chrono::steady_clock::now();
+  if (!force && now < nextInputClaim) return;
+  tsl::hlp::requestForeground(true, false);
+  nextInputClaim = now + InputClaimInterval;
+}
 
 std::string readLastLine(const char* path, const char* unavailable) {
   FILE* file = std::fopen(path, "r");
@@ -789,6 +798,7 @@ class BrowseGui final : public tsl::Gui {
       : previousGeneration(previousGeneration) {}
 
   tsl::elm::Element* createUI() override {
+    claimExclusiveInput(true);
     auto* frame = new tsl::elm::OverlayFrame("Switify", "Spotify browser");
     auto* list = new tsl::elm::List();
     Result result = switifyIpcGetBrowseHeader(&header);
@@ -832,6 +842,7 @@ class BrowseGui final : public tsl::Gui {
   }
 
   void update() override {
+    claimExclusiveInput();
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     SwitifyIpcBrowseHeader latest{};
@@ -1051,10 +1062,18 @@ class SearchKeyboardElement final : public tsl::elm::Element {
 class SearchGui final : public tsl::Gui {
  public:
   tsl::elm::Element* createUI() override {
+    // Foreground applications can reclaim controller input after Tesla's
+    // initial hand-off. Search must own HID for its entire lifetime so typing
+    // never repeats A/D-pad input in the application underneath.
+    claimExclusiveInput(true);
     auto* frame = new tsl::elm::OverlayFrame(
         "Search", "A type   X backspace   B cancel");
     frame->setContent(new SearchKeyboardElement());
     return frame;
+  }
+
+  void update() override {
+    claimExclusiveInput();
   }
 };
 
@@ -1076,6 +1095,7 @@ void openBrowser(Result (*request)()) {
 class ServiceGui final : public tsl::Gui {
  public:
   tsl::elm::Element* createUI() override {
+    claimExclusiveInput(true);
     refreshServiceState(false);
     auto* frame = new tsl::elm::OverlayFrame("Switify", "Service & settings");
     auto* list = new tsl::elm::List();
@@ -1134,6 +1154,7 @@ class ServiceGui final : public tsl::Gui {
   }
 
   void update() override {
+    claimExclusiveInput();
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);
@@ -1169,6 +1190,7 @@ class ServiceGui final : public tsl::Gui {
 class NowPlayingGui final : public tsl::Gui {
  public:
   tsl::elm::Element* createUI() override {
+    claimExclusiveInput(true);
     refreshServiceState(false);
     auto* frame = new tsl::elm::OverlayFrame("Switify", "Now Playing");
     auto* list = new tsl::elm::List();
@@ -1188,6 +1210,7 @@ class NowPlayingGui final : public tsl::Gui {
   }
 
   void update() override {
+    claimExclusiveInput();
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);
@@ -1204,6 +1227,7 @@ class NowPlayingGui final : public tsl::Gui {
 class MainGui final : public tsl::Gui {
  public:
   tsl::elm::Element* createUI() override {
+    claimExclusiveInput(true);
     refreshServiceState(false);
     auto* frame = new tsl::elm::OverlayFrame("Switify", OverlayVersion);
     auto* list = new tsl::elm::List();
@@ -1216,10 +1240,13 @@ class MainGui final : public tsl::Gui {
     list->addItem(actionItem("Search", "Tracks & more", [] {
       if (connectionState == ConnectionState::Connected &&
           currentStatus.service_state == SwitifyServiceState_Ready &&
-          (capabilities & SwitifyIpcCapability_Search))
+          (capabilities & SwitifyIpcCapability_Search)) {
+        // Consume the A press that opens Search before changing screens.
+        claimExclusiveInput(true);
         tsl::changeTo<SearchGui>();
-      else
+      } else {
         feedbackText = "Spotify is still starting";
+      }
     }));
     list->addItem(actionItem("Your Library", "Saved music", [] {
       openBrowser(switifyIpcBrowseLibrary);
@@ -1238,6 +1265,7 @@ class MainGui final : public tsl::Gui {
   }
 
   void update() override {
+    claimExclusiveInput();
     const auto now = std::chrono::steady_clock::now();
     if (now < nextRefresh) return;
     refreshServiceState(false);

@@ -91,17 +91,6 @@ bool sameTrack(const SpotifyEngine::Track& left,
   return left.name == right.name && left.artist == right.artist;
 }
 
-uint32_t shuffleSeed() {
-  // Some Switch C++ runtimes expose a deterministic random_device. Mix it with
-  // a monotonic timestamp so consecutive Shuffle requests cannot reproduce the
-  // same queue ordering.
-  const auto ticks = static_cast<uint64_t>(
-      std::chrono::steady_clock::now().time_since_epoch().count());
-  std::random_device random;
-  return static_cast<uint32_t>(ticks) ^
-         static_cast<uint32_t>(ticks >> 32) ^ random();
-}
-
 #ifdef SWITIFY_BACKGROUND_SERVICE
 size_t boundBackgroundPlaybackWindow(
     std::vector<SpotifyEngine::Track>& tracks, size_t selectedIndex,
@@ -1472,145 +1461,66 @@ bool SpotifyEngine::highQualityEnabled() {
   return highQuality;
 }
 
-bool SpotifyEngine::applyPendingShuffleLocked() {
-  if (!shuffleReorderPending) return true;
-  if (restoredSessionPendingStart || !handler || !activeQueueHasCurrent ||
-      activeQueueIndex >= activeQueue.size() || activePlaylist.empty())
-    return false;
-
-  const bool enabled = nowPlayingData.shuffle;
-  const Track current = activeQueue[activeQueueIndex];
-  if (current.uri.empty()) return false;
-
-  std::vector<Track> replacement;
-  size_t replacementIndex = 0;
-  if (enabled) {
-    replacement.reserve(activePlaylist.size());
-    size_t currentSourceIndex = activePlaylist.size();
-    if (activePlaylistHasCurrent &&
-        activePlaylistIndex < activePlaylist.size() &&
-        sameTrack(activePlaylist[activePlaylistIndex], current)) {
-      currentSourceIndex = activePlaylistIndex;
-    } else {
-      for (size_t index = 0; index < activePlaylist.size(); ++index) {
-        if (sameTrack(activePlaylist[index], current)) {
-          currentSourceIndex = index;
-          break;
-        }
-      }
-    }
-    if (currentSourceIndex >= activePlaylist.size()) return false;
-
-    for (size_t index = 0; index < activePlaylist.size(); ++index) {
-      if (index != currentSourceIndex && !activePlaylist[index].uri.empty())
-        replacement.push_back(activePlaylist[index]);
-    }
-    std::mt19937 generator(shuffleSeed());
-    std::shuffle(replacement.begin(), replacement.end(), generator);
-    replacement.insert(replacement.begin(), current);
-  } else {
-    replacement.reserve(activePlaylist.size());
-    bool foundCurrent = false;
-    for (size_t index = 0; index < activePlaylist.size(); ++index) {
-      const auto& track = activePlaylist[index];
-      if (track.uri.empty()) continue;
-      if (!foundCurrent &&
-          ((activePlaylistHasCurrent && index == activePlaylistIndex &&
-            sameTrack(track, current)) ||
-           (!activePlaylistHasCurrent && sameTrack(track, current)))) {
-        replacementIndex = replacement.size();
-        foundCurrent = true;
-      }
-      replacement.push_back(track);
-    }
-    if (!foundCurrent) {
-      for (size_t index = 0; index < replacement.size(); ++index) {
-        if (sameTrack(replacement[index], current)) {
-          replacementIndex = index;
-          foundCurrent = true;
-          break;
-        }
-      }
-    }
-    if (!foundCurrent) return false;
-  }
-
-  std::vector<std::string> uris;
-  uris.reserve(replacement.size());
-  for (const auto& track : replacement) uris.push_back(track.uri);
-  if (uris.empty() ||
-      !handler->replaceLocalTrackList(uris, replacementIndex))
-    return false;
-
-  activeQueue = std::move(replacement);
-  activeQueueIndex = replacementIndex;
-  activeQueueHasCurrent = true;
-  shuffleReorderPending = false;
-  return true;
-}
-
-void SpotifyEngine::schedulePendingShuffleRetry() {
-  if (shuffleRetryWorkerActive.exchange(true)) return;
-
-  launchWorker([this] {
-    constexpr int RetryCount = 40;
-    constexpr auto RetryDelay = std::chrono::milliseconds(75);
-    bool applied = false;
-
-    for (int attempt = 0; attempt < RetryCount && running; ++attempt) {
-      {
-        std::lock_guard<std::mutex> lock(dataMutex);
-        if (!shuffleReorderPending) {
-          applied = true;
-          break;
-        }
-        applied = applyPendingShuffleLocked();
-      }
-      if (applied) break;
-      std::this_thread::sleep_for(RetryDelay);
-    }
-
-    bool stillPending = false;
-    {
-      std::lock_guard<std::mutex> lock(dataMutex);
-      stillPending = shuffleReorderPending;
-    }
-    shuffleRetryWorkerActive.store(false);
-
-    if (applied) {
-      nxlog::push("Shuffle queue update applied");
-      notifyUpdate();
-      savePlaybackSession();
-    } else if (stillPending) {
-      // TRACK_INFO remains a final retry point if cspot is still promoting the
-      // selected song after this short, non-blocking retry window.
-      nxlog::push("Shuffle queue is still pending track activation");
-    }
-  });
-}
-
 void SpotifyEngine::toggleShuffle() {
   bool enabled = false;
   bool reordered = false;
-  bool deferred = false;
   {
     std::lock_guard<std::mutex> lock(dataMutex);
     nowPlayingData.shuffle = !nowPlayingData.shuffle;
     enabled = nowPlayingData.shuffle;
-    // cspot rejects replacement until its current stream has been promoted to
-    // the active queue. Remember the desired state and retry on TRACK_INFO;
-    // previously the icon changed while the audible order stayed untouched.
-    shuffleReorderPending = !restoredSessionPendingStart &&
-                            !activeQueue.empty() && !activePlaylist.empty();
-    if (shuffleReorderPending) reordered = applyPendingShuffleLocked();
-    deferred = shuffleReorderPending;
+
+    if (!restoredSessionPendingStart && handler && activeQueueHasCurrent &&
+        activeQueueIndex < activeQueue.size() && !activePlaylist.empty()) {
+      const Track current = activeQueue[activeQueueIndex];
+      std::vector<Track> replacement;
+      size_t replacementIndex = 0;
+
+      if (enabled) {
+        replacement.reserve(activePlaylist.size());
+        bool removedCurrent = false;
+        for (const auto& track : activePlaylist) {
+          if (!removedCurrent && sameTrack(track, current)) {
+            removedCurrent = true;
+            continue;
+          }
+          if (!track.uri.empty()) replacement.push_back(track);
+        }
+        if (removedCurrent && !current.uri.empty()) {
+          std::mt19937 generator(std::random_device{}());
+          std::shuffle(replacement.begin(), replacement.end(), generator);
+          replacement.insert(replacement.begin(), current);
+        } else {
+          replacement.clear();
+        }
+      } else {
+        replacement.reserve(activePlaylist.size());
+        bool foundCurrent = false;
+        for (const auto& track : activePlaylist) {
+          if (track.uri.empty()) continue;
+          if (!foundCurrent && sameTrack(track, current)) {
+            replacementIndex = replacement.size();
+            foundCurrent = true;
+          }
+          replacement.push_back(track);
+        }
+        if (!foundCurrent) replacement.clear();
+      }
+
+      std::vector<std::string> uris;
+      uris.reserve(replacement.size());
+      for (const auto& track : replacement) uris.push_back(track.uri);
+      if (!uris.empty() &&
+          handler->replaceLocalTrackList(uris, replacementIndex)) {
+        activeQueue = std::move(replacement);
+        activeQueueIndex = replacementIndex;
+        activeQueueHasCurrent = true;
+        reordered = true;
+      }
+    }
   }
-  nxlog::pushf("Shuffle %s%s%s", enabled ? "enabled" : "disabled",
-               reordered ? "; active queue reordered" : "",
-               deferred ? "; queue update pending" : "");
-  if (deferred) schedulePendingShuffleRetry();
+  nxlog::pushf("Shuffle %s%s", enabled ? "enabled" : "disabled",
+               reordered ? "; active queue reordered" : "");
   notifyUpdate();
-  savePlaybackSession();
 }
 
 void SpotifyEngine::cycleRepeatMode() {
@@ -2765,7 +2675,6 @@ void SpotifyEngine::fetchPlaylistTrackPage(
     try {
       std::unordered_set<std::string> seen;
       size_t sourceCount = 0;
-      const Json* pageContainer = nullptr;
       if (collection.kind == Collection::Kind::LIKED) {
         const Json variables = {
             {"uri", "spotify:collection:tracks"},
@@ -2773,10 +2682,9 @@ void SpotifyEngine::fetchPlaylistTrackPage(
             {"limit", limit}};
         const auto json = Json::parse(
             partnerRequest("fetchLibraryTracks", variables.dump()));
-        pageContainer =
-            jsonPath(json, {"data", "me", "library", "tracks"});
-        sourceCount = appendPartnerTrackPage(pageContainer,
-                                             result.value.tracks, seen);
+        sourceCount = appendPartnerTrackPage(
+            jsonPath(json, {"data", "me", "library", "tracks"}),
+            result.value.tracks, seen);
       } else {
         const Json variables = {
             {"uri", "spotify:playlist:" + collection.id},
@@ -2785,27 +2693,12 @@ void SpotifyEngine::fetchPlaylistTrackPage(
             {"enableWatchFeedEntrypoint", false}};
         const auto json =
             Json::parse(partnerRequest("fetchPlaylist", variables.dump()));
-        pageContainer =
-            jsonPath(json, {"data", "playlistV2", "content"});
-        sourceCount = appendPartnerTrackPage(pageContainer,
-                                             result.value.tracks, seen);
+        sourceCount = appendPartnerTrackPage(
+            jsonPath(json, {"data", "playlistV2", "content"}),
+            result.value.tracks, seen);
       }
       result.value.nextOffset = offset + sourceCount;
       result.value.hasMore = sourceCount == limit;
-      if (pageContainer && pageContainer->is_object()) {
-        result.value.totalCount =
-            static_cast<size_t>(jsonUint(*pageContainer, "totalCount"));
-        if (result.value.totalCount == 0) {
-          const auto paging = pageContainer->find("pagingInfo");
-          if (paging != pageContainer->end() && paging->is_object())
-            result.value.totalCount =
-                static_cast<size_t>(jsonUint(*paging, "totalCount"));
-        }
-        // Some Pathfinder responses report the window size as totalCount.
-        if (result.value.hasMore &&
-            result.value.totalCount <= result.value.nextOffset)
-          result.value.totalCount = 0;
-      }
       nxlog::pushf("Collection page \"%s\": source %u-%u, %u tracks%s",
                    collection.name.c_str(), static_cast<unsigned>(offset + 1),
                    static_cast<unsigned>(result.value.nextOffset),
@@ -2815,110 +2708,6 @@ void SpotifyEngine::fetchPlaylistTrackPage(
       result.error = error.what();
       nxlog::pushf("Collection page fetch failed: %s", error.what());
     }
-    cb(std::move(result));
-  });
-}
-
-void SpotifyEngine::fetchShuffledCollectionWindow(
-    const Collection& collection, std::vector<Track> visiblePage,
-    size_t selectedIndex, size_t maximumTracks,
-    std::function<void(Result<std::vector<Track>>)> cb) {
-  maximumTracks = std::max<size_t>(1, maximumTracks);
-  launchWorker([this, collection, visiblePage = std::move(visiblePage),
-                selectedIndex, maximumTracks, cb = std::move(cb)]() mutable {
-    Result<std::vector<Track>> result;
-    if (currentState != State::Ready) {
-      result.error = "Spotify is still connecting";
-      cb(std::move(result));
-      return;
-    }
-    if (visiblePage.empty() || selectedIndex >= visiblePage.size() ||
-        visiblePage[selectedIndex].uri.empty()) {
-      result.error = "The selected track is unavailable";
-      cb(std::move(result));
-      return;
-    }
-
-    Track selected = visiblePage[selectedIndex];
-    std::unordered_set<std::string> seen;
-    seen.insert(selected.uri);
-    std::vector<Track> candidates;
-    candidates.reserve(maximumTracks * 2);
-
-    // The Web API count is a single inexpensive request and, unlike some
-    // Pathfinder totalCount fields, describes the complete saved library.
-    // Only page metadata is fetched afterwards; the background service never
-    // retains thousands of Track objects at once.
-    size_t totalTracks = collection.itemCount > 0
-                             ? static_cast<size_t>(collection.itemCount)
-                             : 0;
-    try {
-      if (collection.kind == Collection::Kind::LIKED) {
-        const auto count = Json::parse(
-            apiRequest("GET", "/v1/me/tracks?limit=1&offset=0"));
-        totalTracks = std::max(
-            totalTracks, static_cast<size_t>(count.value("total", 0u)));
-      }
-
-      constexpr size_t PageSize = 50;
-      if (totalTracks > 0) {
-        const size_t pageCount = (totalTracks + PageSize - 1) / PageSize;
-        std::vector<size_t> pageOffsets;
-        pageOffsets.reserve(pageCount);
-        for (size_t page = 0; page < pageCount; ++page)
-          pageOffsets.push_back(page * PageSize);
-        std::mt19937 generator(shuffleSeed());
-        std::shuffle(pageOffsets.begin(), pageOffsets.end(), generator);
-
-        // Four independently selected source pages provide a 200-track pool
-        // spanning the entire library. Shuffle chooses the bounded playback
-        // window from that pool, rather than from the page visible in the UI.
-        const size_t pagesToFetch = std::min<size_t>(4, pageOffsets.size());
-        for (size_t page = 0; page < pagesToFetch; ++page) {
-          std::vector<Track> fetched;
-          std::unordered_set<std::string> pageSeen;
-          const Json variables = {
-              {"uri", "spotify:collection:tracks"},
-              {"offset", pageOffsets[page]},
-              {"limit", PageSize}};
-          const auto json = Json::parse(
-              partnerRequest("fetchLibraryTracks", variables.dump()));
-          appendPartnerTrackPage(
-              jsonPath(json, {"data", "me", "library", "tracks"}),
-              fetched, pageSeen);
-          for (auto& track : fetched) {
-            if (!track.uri.empty() && seen.insert(track.uri).second)
-              candidates.push_back(std::move(track));
-          }
-        }
-      }
-    } catch (const std::exception& error) {
-      // A count/sample failure must not make the selected song unplayable.
-      // Retain the visible page as a graceful fallback and leave diagnostics.
-      nxlog::pushf("Global collection shuffle sampling failed: %s",
-                   error.what());
-    }
-
-    // The current UI page is fallback material and also fills short libraries;
-    // it no longer defines the full Shuffle candidate set.
-    for (auto& track : visiblePage) {
-      if (!track.uri.empty() && seen.insert(track.uri).second)
-        candidates.push_back(std::move(track));
-    }
-    std::mt19937 generator(shuffleSeed());
-    std::shuffle(candidates.begin(), candidates.end(), generator);
-
-    result.value.reserve(std::min(maximumTracks, candidates.size() + 1));
-    result.value.push_back(std::move(selected));
-    for (auto& track : candidates) {
-      if (result.value.size() >= maximumTracks) break;
-      result.value.push_back(std::move(track));
-    }
-    nxlog::pushf(
-        "Global shuffle window: %u of %u liked tracks (%u candidates)",
-        static_cast<unsigned>(result.value.size()),
-        static_cast<unsigned>(totalTracks),
-        static_cast<unsigned>(candidates.size()));
     cb(std::move(result));
   });
 }
@@ -3500,7 +3289,7 @@ void SpotifyEngine::playTracks(std::vector<Track> tracks, size_t startIndex,
   if (shuffle && tracks.size() > 1) {
     Track selected = tracks[startIndex];
     tracks.erase(tracks.begin() + static_cast<std::ptrdiff_t>(startIndex));
-    std::mt19937 generator(shuffleSeed());
+    std::mt19937 generator(std::random_device{}());
     std::shuffle(tracks.begin(), tracks.end(), generator);
     tracks.insert(tracks.begin(), std::move(selected));
     startIndex = 0;
@@ -3523,7 +3312,6 @@ void SpotifyEngine::playTracks(std::vector<Track> tracks, size_t startIndex,
     activeQueue = tracks;
     activeQueueIndex = startIndex;
     activeQueueHasCurrent = true;
-    shuffleReorderPending = false;
     restoredSessionPendingStart = false;
     const auto& selected = tracks[startIndex];
     nowPlayingData.id = selected.id;
@@ -3764,11 +3552,6 @@ void SpotifyEngine::run() {
         case cspot::SpircHandler::EventType::TRACK_INFO: {
           const auto info = std::get<cspot::TrackInfo>(event->data);
           std::string resolvedUri;
-          bool shuffleApplied = false;
-          const int cspotQueueIndex =
-              handler && handler->getTrackQueue()
-                  ? handler->getTrackQueue()->currentIndex()
-                  : -1;
           {
             std::lock_guard<std::mutex> lock(dataMutex);
             nowPlayingData.id = info.trackId;
@@ -3784,28 +3567,18 @@ void SpotifyEngine::run() {
             nowPlayingData.savePending = false;
             restoredSessionPendingStart = false;
             activeQueueHasCurrent = false;
-            if (cspotQueueIndex >= 0 &&
-                static_cast<size_t>(cspotQueueIndex) < activeQueue.size()) {
-              activeQueueIndex = static_cast<size_t>(cspotQueueIndex);
-              activeQueueHasCurrent = true;
-            } else {
-              for (size_t index = 0; index < activeQueue.size(); ++index) {
-                const auto& track = activeQueue[index];
-                if ((!info.trackId.empty() && track.id == info.trackId) ||
-                    (track.name == info.name && track.artist == info.artist)) {
-                  activeQueueIndex = index;
-                  activeQueueHasCurrent = true;
-                  break;
-                }
+            for (size_t index = 0; index < activeQueue.size(); ++index) {
+              const auto& track = activeQueue[index];
+              if (track.name == info.name && track.artist == info.artist) {
+                activeQueueIndex = index;
+                activeQueueHasCurrent = true;
+                nowPlayingData.id = track.id;
+                nowPlayingData.uri = track.uri;
+                resolvedUri = track.uri;
+                if (!track.imageUrl.empty())
+                  nowPlayingData.imageUrl = track.imageUrl;
+                break;
               }
-            }
-            if (activeQueueHasCurrent) {
-              const auto& track = activeQueue[activeQueueIndex];
-              nowPlayingData.id = track.id;
-              nowPlayingData.uri = track.uri;
-              resolvedUri = track.uri;
-              if (!track.imageUrl.empty())
-                nowPlayingData.imageUrl = track.imageUrl;
             }
             activePlaylistHasCurrent = false;
             for (size_t index = 0; index < activePlaylist.size(); ++index) {
@@ -3816,13 +3589,9 @@ void SpotifyEngine::run() {
                 break;
               }
             }
-            if (shuffleReorderPending)
-              shuffleApplied = applyPendingShuffleLocked();
             positionBaseMs = 0;
             positionMeasuredAt = std::chrono::steady_clock::now();
           }
-          if (shuffleApplied)
-            nxlog::push("Pending shuffle queue update applied");
           refreshTrackSavedState(resolvedUri);
           savePlaybackSession();
           break;

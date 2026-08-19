@@ -622,11 +622,6 @@ bool TrackQueue::hasTracks() {
   return currentTracks.size() > 0;
 }
 
-int TrackQueue::currentIndex() {
-  std::scoped_lock lock(tracksMutex);
-  return currentTracksIndex;
-}
-
 bool TrackQueue::isFinished() {
   std::scoped_lock lock(tracksMutex);
   return currentTracksIndex >= currentTracks.size() - 1;

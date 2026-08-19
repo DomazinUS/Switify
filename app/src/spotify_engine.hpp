@@ -123,7 +123,6 @@ class SpotifyEngine {
     std::vector<Track> tracks;
     size_t offset = 0;
     size_t nextOffset = 0;
-    size_t totalCount = 0;
     bool hasMore = false;
   };
 
@@ -217,13 +216,6 @@ class SpotifyEngine {
   void fetchPlaylistTrackPage(
       const Collection& collection, size_t offset, size_t limit,
       std::function<void(Result<TrackPage>)> cb);
-  // Builds a fixed-size queue whose candidates are sampled from the complete
-  // remote collection. This keeps the overlay's memory bounded without making
-  // its visible 50-row page the effective Shuffle universe.
-  void fetchShuffledCollectionWindow(
-      const Collection& collection, std::vector<Track> visiblePage,
-      size_t selectedIndex, size_t maximumTracks,
-      std::function<void(Result<std::vector<Track>>)> cb);
   void search(const std::string& query,
               std::function<void(Result<SearchResults>)> cb);
   void setTrackSaved(const std::string& uri, bool saved,
@@ -249,8 +241,6 @@ class SpotifyEngine {
   void savePlaybackSession();
   bool restorePlaybackSession();
   void refreshTrackSavedState(const std::string& uri);
-  bool applyPendingShuffleLocked();
-  void schedulePendingShuffleRetry();
   bool waitForApiRateLimitWindow();
 
   std::string userToken(const std::string& scopes);
@@ -296,11 +286,6 @@ class SpotifyEngine {
   std::vector<Track> activeQueue;
   size_t activeQueueIndex = 0;
   bool activeQueueHasCurrent = false;
-  // Shuffle can be requested before cspot has promoted the current stream to
-  // the active queue. Retry it on TRACK_INFO so its visual and audible state
-  // cannot silently diverge.
-  bool shuffleReorderPending = false;
-  std::atomic<bool> shuffleRetryWorkerActive{false};
   // A persisted session is restored as paused UI state. The first explicit
   // Play command loads it into cspot at the saved track and position.
   bool restoredSessionPendingStart = false;

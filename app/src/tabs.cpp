@@ -435,7 +435,10 @@ class TheaterView : public brls::Box {
 
     registerAction(
         "Close player", brls::BUTTON_START,
-        [](brls::View*) { return brls::Application::popActivity(); });
+        [](brls::View*) {
+          return brls::Application::popActivity(
+              brls::TransitionAnimation::NONE);
+        });
     registerAction(
         "Back", brls::BUTTON_B,
         [](brls::View*) { return brls::Application::popActivity(); }, true);
@@ -528,7 +531,7 @@ class TheaterView : public brls::Box {
 
 void showTheaterMode() {
   brls::Application::pushActivity(new brls::Activity(new TheaterView()),
-                                  brls::TransitionAnimation::FADE);
+                                  brls::TransitionAnimation::NONE);
 }
 
 // ---- Home ---------------------------------------------------------------
