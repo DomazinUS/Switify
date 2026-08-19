@@ -171,6 +171,8 @@ const std::unordered_map<std::string, std::string> PATHFINDER_HASHES = {
      "08ffb4730af3746e04a8301396f20875dbbce10c75243803091a9274eacc8ac0"},
     {"queryArtistOverview",
      "ae0e2958a4ab645b35ca19ac04d0495ae12d9c5d7b7286217674801a9aab281a"},
+    {"queryPodcastEpisodes",
+     "06046f9b939d56c8eb7cdbb687da938de1164c006871aec91dc26e4dc7d8eb08"},
     {"searchDesktop",
      "db61238974d27839a136c9dc02bfdbe3fab7635f21cf85976ebff9a1ee281345"},
     {"userTopContent",
@@ -787,6 +789,25 @@ size_t appendPartnerTrackPage(
     auto parsed = parsePartnerTrack(item);
     if (!parsed.uri.empty() && seen.insert(parsed.uri).second)
       output.push_back(std::move(parsed));
+  }
+  return items->size();
+}
+
+size_t appendPartnerEpisodePage(
+    const Json* container, std::vector<SpotifyEngine::Track>& output,
+    std::unordered_set<std::string>& seen, const std::string& showName,
+    const std::string& publisher, const std::string& showImage) {
+  if (!container || !container->is_object()) return 0;
+  const auto items = container->find("items");
+  if (items == container->end() || !items->is_array()) return 0;
+  for (const auto& item : *items) {
+    auto episode = parsePartnerEpisode(item);
+    if (episode.album.empty()) episode.album = showName;
+    if (episode.artist.empty())
+      episode.artist = publisher.empty() ? showName : publisher;
+    if (episode.imageUrl.empty()) episode.imageUrl = showImage;
+    if (!episode.uri.empty() && seen.insert(episode.uri).second)
+      output.push_back(std::move(episode));
   }
   return items->size();
 }
@@ -2942,23 +2963,72 @@ void SpotifyEngine::fetchPlaylistTracks(
         constexpr int PageSize = 50;
         constexpr int MaximumEpisodes = 500;
         std::unordered_set<std::string> seen;
-        for (int offset = 0; offset < MaximumEpisodes; offset += PageSize) {
-          const auto page = Json::parse(apiRequest(
-              "GET", "/v1/shows/" + urlEncode(collection.id) +
-                         "/episodes?limit=" + std::to_string(PageSize) +
-                         "&offset=" + std::to_string(offset)));
-          const auto items = page.find("items");
-          if (items == page.end() || !items->is_array()) break;
-          const size_t before = result.value.size();
-          for (const auto& item : *items) {
-            auto episode = parseEpisode(item, collection.name,
-                                        collection.subtitle,
-                                        collection.imageUrl);
-            if (!episode.uri.empty() && seen.insert(episode.uri).second)
-              result.value.push_back(std::move(episode));
+        std::string partnerError;
+        try {
+          const std::string showUri =
+              collection.uri.empty()
+                  ? "spotify:show:" + collection.id
+                  : collection.uri;
+          for (int offset = 0; offset < MaximumEpisodes;
+               offset += PageSize) {
+            const Json variables = {
+                {"uri", showUri},
+                {"offset", offset},
+                {"limit", PageSize},
+                {"includeEpisodeContentRatingsV2", false}};
+            const auto response = Json::parse(
+                partnerRequest("queryPodcastEpisodes", variables.dump()));
+            const Json* page = jsonPath(
+                response, {"data", "podcastUnionV2", "episodesV2"});
+            const size_t before = result.value.size();
+            const size_t sourceCount = appendPartnerEpisodePage(
+                page, result.value, seen, collection.name,
+                collection.subtitle, collection.imageUrl);
+            if (sourceCount < PageSize || result.value.size() == before)
+              break;
           }
-          if (items->size() < PageSize || result.value.size() == before)
-            break;
+          nxlog::pushf("Podcast partner episodes: %d",
+                       static_cast<int>(result.value.size()));
+        } catch (const std::exception& error) {
+          partnerError = error.what();
+          result.value.clear();
+          seen.clear();
+          nxlog::pushf("Podcast partner episode request failed: %s",
+                       partnerError.c_str());
+        }
+
+        // Retain the public endpoint only as compatibility fallback. Normal
+        // episode browsing no longer shares its global rate-limit cooldown.
+        if (result.value.empty()) {
+          try {
+            for (int offset = 0; offset < MaximumEpisodes;
+                 offset += PageSize) {
+              const auto page = Json::parse(apiRequest(
+                  "GET", "/v1/shows/" + urlEncode(collection.id) +
+                             "/episodes?limit=" +
+                             std::to_string(PageSize) + "&offset=" +
+                             std::to_string(offset)));
+              const auto items = page.find("items");
+              if (items == page.end() || !items->is_array()) break;
+              const size_t before = result.value.size();
+              for (const auto& item : *items) {
+                auto episode = parseEpisode(item, collection.name,
+                                            collection.subtitle,
+                                            collection.imageUrl);
+                if (!episode.uri.empty() && seen.insert(episode.uri).second)
+                  result.value.push_back(std::move(episode));
+              }
+              if (items->size() < PageSize ||
+                  result.value.size() == before)
+                break;
+            }
+          } catch (const std::exception& apiError) {
+            throw std::runtime_error(
+                "Podcast episodes unavailable" +
+                (partnerError.empty() ? std::string()
+                                      : ": partner " + partnerError) +
+                "; fallback " + apiError.what());
+          }
         }
       } else {
         constexpr int PageSize = 50;

@@ -28,6 +28,7 @@ DEFAULT_OPERATIONS = (
     "getAlbum",
     "queryHomeSection",
     "queryArtistOverview",
+    "queryPodcastEpisodes",
     "userTopContent",
     "fetchEntitiesForRecentlyPlayed",
 )
