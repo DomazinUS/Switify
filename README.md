@@ -21,13 +21,13 @@ independently installed experiences:
 
 | Component | Current version | Purpose |
 | --- | ---: | --- |
-| **Switify NRO** | **0.6.4** | Full-screen Home, Search, Library, collection browsing, first-time login, and native playback. |
-| **Switify Overlay** | **0.4.4** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
+| **Switify NRO** | **0.7.0** | Full-screen Home, Search, Library, collection browsing, first-time login, lyrics, and native playback. |
+| **Switify Overlay** | **0.5.0** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
 
 The two products do not share a process or live playback engine. They share
 only persistent authentication, settings, session metadata, and selected cache
-files under `sdmc:/config/Switify/`. Do not run both playback engines at the
-same time.
+files under `sdmc:/config/Switify/`. They can run independently at the same
+time, although doing so deliberately produces two overlapping audio streams.
 
 ## Features
 
@@ -38,6 +38,9 @@ same time.
 - Liked Songs, playlists, saved albums, shows, episodes, and collection pages
 - Paginated large libraries and responsive playlist rendering
 - Persistent mini-player plus full Now Playing and theater modes
+- Full lyrics view with live Musixmatch line synchronization when available
+- Optional line-synced full-player lyrics, enabled by default
+- Black, animated RGB Gradient, and animated RGB Solid full-player backgrounds
 - Native shuffle, Previous, Play/Pause, Next, Repeat All, and Repeat One
 - Stateful liked-track heart, queue, seeking, and persistent volume
 - Optional global `Y`, `L`, `R`, `ZL`, and `ZR` playback shortcuts
@@ -56,6 +59,9 @@ same time.
 - Background audio that can continue while another title is running
 - A dormant service that starts only when the overlay requests it; Switify does
   not reserve its background resources at console boot
+- Followed podcasts in Your Library with playable paginated episodes
+- Resilient service supervision, explicit/coalesced playback controls, and
+  safe resource teardown when Ultrahand closes
 - Last session restored paused and silent until an explicit Play command
 
 ## Requirements
@@ -76,14 +82,14 @@ then launch Switify.
 The [latest release](https://github.com/DomazinUS/Switify/releases/latest)
 contains:
 
-- `Switify-0.6.4.zip` — standalone full-screen application
-- `Switify-Overlay-0.4.4.zip` — Ultrahand overlay and dormant background service
-- `Switify-source-0.6.4.zip` — corresponding buildable source snapshot
+- `Switify-0.7.0.zip` — standalone full-screen application
+- `Switify-Overlay-0.5.0.zip` — Ultrahand overlay and dormant background service
+- `Switify-source-0.7.0.zip` — corresponding buildable source snapshot
 - `SHA256SUMS.txt` — SHA-256 checksums for all three archives
 
 ## Install the standalone app
 
-1. Download `Switify-0.6.4.zip` and extract it to the root of the SD card.
+1. Download `Switify-0.7.0.zip` and extract it to the root of the SD card.
 2. Confirm that the resulting file is
    `sdmc:/switch/Switify/Switify.nro`.
 3. Return the SD card to the console and launch Switify through title override.
@@ -116,7 +122,7 @@ Authenticate successfully in the NRO **before** installing or opening the
 overlay. The overlay intentionally has no separate login flow.
 
 1. Close the standalone NRO.
-2. Download `Switify-Overlay-0.4.4.zip` and extract it to the SD-card root.
+2. Download `Switify-Overlay-0.5.0.zip` and extract it to the SD-card root.
 3. Confirm these installed files:
 
        sdmc:/switch/.overlays/Switify.ovl

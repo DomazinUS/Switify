@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$engineVersion = if ($Lightweight) { "0.4.4-lite1" } else { "0.4.4" }
+$engineVersion = if ($Lightweight) { "0.5.0-lite1" } else { "0.5.0" }
 
 $candidates = @()
 if (-not [string]::IsNullOrWhiteSpace($DevkitPro)) { $candidates += $DevkitPro }

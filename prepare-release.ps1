@@ -4,8 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$appVersion = "0.6.4"
-$overlayVersion = "0.4.4"
+$appVersion = "0.7.0"
+$overlayVersion = "0.5.0"
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $releaseRoot = Join-Path $projectRoot "release"
 
@@ -120,13 +120,15 @@ foreach ($file in @(".gitattributes", ".gitignore", "CHANGELOG.md",
         -Destination $sourceStage
 }
 
-foreach ($generatedDirectory in @(
-        "phase2\overlay\build", "phase2\probe\build",
-        "phase2\sysmodule\build")) {
-    $path = Join-Path $sourceStage $generatedDirectory
-    if (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Recurse -Force
-    }
+foreach ($component in @("phase2\overlay", "phase2\probe",
+                          "phase2\sysmodule")) {
+    $componentPath = Join-Path $sourceStage $component
+    if (-not (Test-Path -LiteralPath $componentPath)) { continue }
+    Get-ChildItem -LiteralPath $componentPath -Directory -Force |
+        Where-Object { $_.Name -eq "build" -or $_.Name -like "build_*" } |
+        ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force
+        }
 }
 $sourceMetadataDirectories = @(Get-ChildItem -LiteralPath $sourceStage `
     -Recurse -Force -Directory | Where-Object {

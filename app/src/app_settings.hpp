@@ -8,8 +8,8 @@ struct Snapshot {
   bool playbackShortcuts = false;
   float outputVolume = 0.8f;
   bool highQuality = false;
-  PlayerBackgroundMode playerBackgroundMode = PlayerBackgroundMode::Off;
-  bool showSyncedLyricsInFullPlayer = false;
+  PlayerBackgroundMode playerBackgroundMode = PlayerBackgroundMode::Solid;
+  bool showSyncedLyricsInFullPlayer = true;
   bool equalizerEnabled = false;
   float bassDb = 0.0f;
   float midDb = 0.0f;

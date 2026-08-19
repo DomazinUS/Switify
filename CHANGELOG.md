@@ -3,27 +3,54 @@
 All notable Switify changes are documented here. Standalone NRO and overlay
 versions are tracked independently because they are separate applications.
 
-## Standalone NRO 0.6.4 — 2026-08-18
+## Standalone NRO 0.7.0 — 2026-08-19
 
 ### Added
 
-- Saved shows now use Spotify's native `Podcasts & Shows` `libraryV3` filter
-  and appear in both the Podcasts Home filter and a dedicated Saved podcasts
-  Library row.
-- Restored complete Liked Songs and playlist sessions in the NRO, including
-  Play All. Multi-thousand-track collections remain cached after their first
-  load, while the interface materializes only 100 rows at a time.
+- Added Spotify lyrics to Now Playing, including a controller-scrollable full
+  text view, timestamps, a live current/upcoming-line panel, and active-row
+  highlighting when Spotify supplies Musixmatch line timing.
+- Added optional line-synced lyrics directly to the full player. This is
+  enabled by default and follows playback and seeking in real time.
+- Added Black, animated RGB Gradient, and animated RGB Solid full-player
+  backgrounds. RGB Solid is the default; these modes never alter the normal
+  Now Playing tab.
+- Added followed podcast shows through Spotify's native `Podcasts & Shows`
+  library filter, with dedicated Home/Library surfaces and paginated playable
+  episode lists.
+- Added a small session lyrics cache so reopening the player does not repeat a
+  Spotify lyrics request for the same track.
 
 ### Changed
 
+- Restored complete Liked Songs and playlist sessions, including Play All.
+  Multi-thousand-track collections remain cached after their first load while
+  only 100 interface rows are materialized at once.
+- Large Now Playing, full-player, and collection artwork now retain Spotify's
+  largest supplied image instead of being forced through the 300-pixel card
+  endpoint. Small cards remain bandwidth-conscious.
 - Removed unused AAC, MP3, ALAC, and Opus decoder paths. Switify explicitly
   requests Spotify's 160 or 320 kbps OGG Vorbis streams, so this reduces the
   NRO image and working set without removing a selectable format.
-- Shuffle now retries a live queue reorder after cspot finishes promoting the
-  current stream. The highlighted state can no longer silently differ from
-  the audible queue when Shuffle is pressed during track preparation.
+- Improved podcast terminology throughout collection and playback surfaces so
+  podcast items are consistently described as episodes rather than songs.
 
-## Overlay and background service 0.4.4 — 2026-08-18
+### Fixed
+
+- Podcast episode loading now uses Spotify's authenticated partner endpoint,
+  avoiding the public API rate-limit loop that could leave a show empty.
+- Hardened Shuffle/Repeat state publication and queue updates so the visible
+  player state cannot silently diverge from the native playback engine.
+- Preserved loaded dashboards, libraries, collections, and artwork across tab
+  changes instead of needlessly re-fetching them.
+
+## Overlay and background service 0.5.0 — 2026-08-19
+
+### Added
+
+- Added followed podcasts under Your Library with paginated playable episodes.
+- Added host coverage for coalescing explicit playback-state commands while
+  the native engine is busy.
 
 ### Fixed
 
@@ -33,19 +60,33 @@ versions are tracked independently because they are separate applications.
   tracks. The browser fetches 50 remotely paged tracks at a time and retains a
   bounded 100-track playback window.
 - The overlay retries automatic service launch four times with bounded
-  backoff instead of requiring Retry automatic startup after a slow launch.
+  backoff, supervises unexpected Dormant transitions, and keeps browsing
+  requests from killing or indefinitely wedging the service.
+- Loading pages always retain a local B-button escape, and overlay browsing
+  runs away from Ultrahand's render thread.
+- Search and browser input is claimed exclusively by the overlay instead of
+  leaking button presses into the game or application behind Ultrahand.
+- Play/Pause now sends an explicit target state rather than a stale toggle;
+  queued Play/Pause, seek, volume, Shuffle, Repeat, and quality changes retain
+  only their newest requested state.
+- Closing Ultrahand releases overlay-owned artwork, network, and IPC resources
+  before control returns to the foreground title, then reconnects cleanly the
+  next time the overlay is shown.
 - Centered decoded artwork within the player frame and moved the volume
-  percentage above its slider.
-- Shares the deterministic, deferred Shuffle queue update used by the NRO.
+  percentage above its slider while keeping the Volume label aligned with the
+  bar.
 
 ### Changed
 
-- Applied the lite service profile to the artwork-enabled overlay: a 3 MiB
-  fixed heap and only the Vorbis decoder paths Switify can actually select.
+- Applied the lightweight runtime work to the artwork-enabled release: a
+  bounded fixed heap, Vorbis-only decoding, smaller catalog caches, remote
+  collection paging, and a 100-track playback window.
 - Made cover-art networking just-in-time. Cached JPEGs use no overlay BSD
   session; a cache miss claims one session only for the download, releases it
   immediately, discards the encoded buffer after decoding, and retains only
   the currently drawable RGBA cover.
+- Kept the service dormant at boot and audout lazy until actual playback, so
+  browsing alone does not reserve an audio output path.
 
 ## Standalone NRO 0.6.3 — 2026-08-16
 

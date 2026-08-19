@@ -20,9 +20,9 @@
 namespace {
 
 #ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
-constexpr const char* OverlayVersion = "v0.4.4-lite1";
+constexpr const char* OverlayVersion = "v0.5.0-lite1";
 #else
-constexpr const char* OverlayVersion = "v0.4.4";
+constexpr const char* OverlayVersion = "v0.5.0";
 #endif
 
 constexpr uint64_t SwitifyProgramId = UINT64_C(0x4200000000535754);

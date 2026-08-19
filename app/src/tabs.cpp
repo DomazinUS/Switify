@@ -2183,7 +2183,7 @@ SettingsTab::SettingsTab()
   aboutHeader->setMarginTop(16);
   content->addView(aboutHeader);
   content->addView(swui::makeStatePanel(
-      "Switify 0.6.4",
+      "Switify 0.7.0",
       "Created by HiroshiYamauchi\nA controller-first native Spotify client "
       "for Nintendo Switch homebrew."));
 
@@ -2191,7 +2191,7 @@ SettingsTab::SettingsTab()
       "About and credits",
       [](brls::View*) {
         showInformationPage(
-            "About Switify", "Version 0.6.4",
+            "About Switify", "Version 0.7.0",
             {{"Created by HiroshiYamauchi",
               "A controller-first native Spotify client for Nintendo Switch "
               "homebrew."},
@@ -2218,17 +2218,19 @@ SettingsTab::SettingsTab()
       [](brls::View*) {
         showInformationPage(
             "Changelog", "Complete Switify development history",
-            {{"Standalone 0.6.4 · complete cached collections",
-              "Restored complete Liked Songs and playlists with Play All, "
-              "multi-thousand-track session caching, and 100-row lazy UI "
-              "batches. Added followed podcasts through Spotify's exact "
-              "native Podcasts & Shows filter, reliable deferred Shuffle, "
-              "and removed unused non-Vorbis decoders."},
-             {"Overlay 0.4.4 · compatibility and paging",
-              "Reduced the resident service and artwork footprint, fixed "
-              "Nintendo 64 Nintendo Switch Online compatibility, added "
-              "bounded automatic startup retries, demand-loaded collection "
-              "pages, centered artwork, and a clear volume layout."},
+            {{"Standalone 0.7.0 · lyrics, podcasts, and full player",
+              "Added full lyrics with Musixmatch line synchronization, live "
+              "current/upcoming lines, and active-line highlighting. Added "
+              "full-player synced lyrics plus Black, RGB Gradient, and RGB "
+              "Solid backgrounds. Added followed podcasts with playable "
+              "episodes and restored complete cached Liked Songs and "
+              "playlists with lazy 100-row rendering."},
+             {"Overlay 0.5.0 · stability and compatibility",
+              "Restored Nintendo 64 Nintendo Switch Online compatibility; "
+              "added remote collection paging, followed podcasts, resilient "
+              "automatic startup, local B escape, foreground input "
+              "isolation, explicit/coalesced controls, and safe artwork, "
+              "network, and IPC teardown when Ultrahand closes."},
              {"Standalone 0.6.3 · playback modes",
               "Made Shuffle reorder the queue that is already playing. Moved "
               "Repeat All and Repeat One into the native queue/player path so "

@@ -25,7 +25,7 @@ background service then operate independently. If credentials are missing, the
 background service reports that the user must open the NRO and sign in; it does
 not expose a second pairing flow.
 
-## Current milestone: release 0.4.4
+## Current milestone: release 0.5.0
 
 Version 0.3.5 is withdrawn. Its experimental resource reductions caused missing
 audio, indefinitely loading playlist views, and an overlay navigation trap on
@@ -48,7 +48,10 @@ caches for a lighter overlay-service profile. Version 0.4.3 corrects live
 Shuffle and repeat behavior. Version 0.4.4 applies the proven lite resource
 profile to the artwork build, makes artwork networking just-in-time, remotely
 paginates large collections, and restores Nintendo 64 Nintendo Switch Online
-compatibility in hardware testing.
+compatibility in hardware testing. Version 0.5.0 adds followed podcasts and
+consolidates the resilience work: supervised automatic startup, render-thread
+isolation, local loading-screen escape, exclusive overlay input, explicit and
+coalesced player controls, and resource teardown when Ultrahand closes.
 
 Implemented:
 
@@ -125,7 +128,7 @@ Outputs:
     phase2\build_engine\switify-background.nsp
     phase2\dist_engine\atmosphere\contents\4200000000535754\exefs.nsp
     phase2\dist_engine\switch\.overlays\Switify.ovl
-    phase2\Switify-Phase2-engine-0.4.4.zip
+    phase2\Switify-Phase2-engine-0.5.0.zip
 
 The installed sysmodule is dormant. There is deliberately no `boot2.flag`, so
 Atmosphere will not start it during boot. Opening the overlay launches it once
@@ -135,7 +138,7 @@ If launch fails, the next reboot starts normally with Switify inactive.
 ### Hardware checkpoint order
 
 1. Stop any currently running Switify background service from the old overlay.
-2. Extract `Switify-Phase2-engine-0.4.4.zip` to the SD root and reboot once so
+2. Extract `Switify-Phase2-engine-0.5.0.zip` to the SD root and reboot once so
    Atmosphere discovers the replaced ExeFS. The service remains dormant because
    the package contains no `boot2.flag`.
 3. Open `Switify` in Ultrahand. The background service starts automatically;

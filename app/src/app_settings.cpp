@@ -24,8 +24,8 @@ std::atomic_bool gPlaybackShortcuts{false};
 std::atomic<float> gOutputVolume{0.8f};
 std::atomic_bool gHighQuality{false};
 std::atomic<int> gPlayerBackgroundMode{
-    static_cast<int>(PlayerBackgroundMode::Off)};
-std::atomic_bool gShowSyncedLyricsInFullPlayer{false};
+    static_cast<int>(PlayerBackgroundMode::Solid)};
+std::atomic_bool gShowSyncedLyricsInFullPlayer{true};
 std::atomic_bool gEqualizerEnabled{false};
 std::atomic<float> gBassDb{0.0f};
 std::atomic<float> gMidDb{0.0f};
@@ -71,16 +71,20 @@ void load() {
     gOutputVolume = clampVolume(json.value("output_volume", 0.8f));
     gHighQuality = json.value("audio_quality", std::string("normal")) ==
                    "high";
-    int backgroundMode = json.value(
-        "player_background_mode",
-        json.value("animated_player_background", false)
-            ? static_cast<int>(PlayerBackgroundMode::Gradient)
-            : static_cast<int>(PlayerBackgroundMode::Off));
+    int backgroundMode = static_cast<int>(PlayerBackgroundMode::Solid);
+    if (json.contains("player_background_mode")) {
+      backgroundMode = json.value("player_background_mode", backgroundMode);
+    } else if (json.contains("animated_player_background")) {
+      backgroundMode =
+          json.value("animated_player_background", false)
+              ? static_cast<int>(PlayerBackgroundMode::Gradient)
+              : static_cast<int>(PlayerBackgroundMode::Off);
+    }
     gPlayerBackgroundMode = std::clamp(
         backgroundMode, static_cast<int>(PlayerBackgroundMode::Off),
         static_cast<int>(PlayerBackgroundMode::Solid));
     gShowSyncedLyricsInFullPlayer =
-        json.value("show_synced_lyrics_in_full_player", false);
+        json.value("show_synced_lyrics_in_full_player", true);
     gEqualizerEnabled = json.value("equalizer_enabled", false);
     gBassDb = clampDb(json.value("bass_db", 0.0f));
     gMidDb = clampDb(json.value("mid_db", 0.0f));

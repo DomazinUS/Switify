@@ -42,7 +42,7 @@ Outputs include:
     phase2\build_engine\switify-background.nsp
     phase2\dist_engine\atmosphere\contents\4200000000535754\exefs.nsp
     phase2\dist_engine\switch\.overlays\Switify.ovl
-    phase2\Switify-Phase2-engine-0.4.4.zip
+    phase2\Switify-Phase2-engine-0.5.0.zip
 
 See [phase2/README.md](phase2/README.md) for the IPC boundary, memory/resource
 profile, host tests, hardware checkpoint order, and N64 Nintendo Switch Online
