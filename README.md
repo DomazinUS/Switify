@@ -68,7 +68,9 @@ time, although doing so deliberately produces two overlapping audio streams.
 
 - A Nintendo Switch capable of running Atmosphere homebrew
 - Recent Atmosphere and Homebrew Menu installations
-- A Spotify **Premium** account (required by native Spotify playback)
+- A Spotify **Premium** account (required by native Spotify playback). Spotify
+  still denies native audio keys to some Premium accounts; see
+  [Premium account authenticates but cannot play](#premium-account-authenticates-but-cannot-play)
 - Network access; a phone or other Spotify client on the same local network is
   needed for the first pairing
 - Ultrahand Overlay for the optional overlay package
@@ -146,9 +148,75 @@ Atmosphere content. Authentication, volume, quality, equalizer, caches, and
 session state live under `sdmc:/config/Switify/` and are not part of the
 release archive.
 
+## Troubleshooting
+
+### Overlay service stays Starting or Dormant
+
+The Ultrahand interface and Switify's Atmosphere background service are two
+separate programs. If the overlay opens but its service remains **Starting** or
+returns to **Dormant**, Atmosphere may not have enough free system memory or
+other kernel resources to launch the service. This is most likely on consoles
+with several sysmodules and overlays installed or running at the same time; it
+is not an authentication failure.
+
+Try these steps in order:
+
+1. Reboot the Switch once after installing or updating the overlay package.
+2. Stop or temporarily disable unused sysmodules and overlays, then reboot.
+3. In Switify's overlay settings, use **Retry automatic startup**, followed by
+   **Refresh connection**.
+4. Confirm that all three overlay/service files listed under
+   [Install the overlay](#install-the-overlay) came from the same release.
+
+If the failure is specifically caused by insufficient system resources, the
+third-party [Memory Kit](https://github.com/ppkantorski/Memory-Kit) project has
+resolved it on an affected console. This is an **optional, advanced workaround
+used entirely at your own discretion**. Memory Kit is not included in or
+supported by Switify, and there is no universal setting that Switify can safely
+recommend for every console.
+
+Memory Kit can change Ultrahand/Atmosphere memory allocation and can patch the
+Mesosphere kernel and bootloader configuration. An unsuitable configuration
+can cause boot or compatibility problems, and some Memory Kit modes explicitly
+warn that browser functionality may break. Back up the relevant SD-card and
+boot configuration, read Memory Kit's current instructions and warnings in
+full, verify compatibility with the installed Atmosphere and Ultrahand
+versions, and be prepared to undo the change. A reboot is normally required
+after applying it. The workaround is not guaranteed to solve every service
+startup failure.
+
+### Premium account authenticates but cannot play
+
+Some Spotify Premium accounts can authenticate successfully and browse Home,
+Search, and Library, yet Spotify refuses the native audio-key requests required
+for local playback. Confirmed reports have particularly involved recently
+created Premium accounts: on the same Switch and Switify installation, an
+older Premium account played normally while the newer account did not.
+
+This is an account-side restriction imposed by Spotify, not a failed Premium
+check, password error, decoder problem, or ordinary network failure. Switify
+cannot override a server-side audio-key denial. Supplying a Spotify Developer
+Client ID or secret would only authorize Web API features such as search,
+library, and playlists; it does **not** grant native audio keys or change the
+account's playback eligibility. Reinstalling Switify, deleting its credentials,
+or repeating authentication cannot alter that Spotify-side decision either.
+
+At present, the only confirmed workaround is to use an older Spotify Premium
+account for which Spotify permits native audio-key playback. Account age is not
+a guarantee, but if an older Premium account works on the same console while a
+newer one does not, that isolates the problem to Spotify's account-side access
+rather than Switify or the Switch.
+
 ## Known limitations
 
 - Spotify Premium is required.
+- Some Premium accounts can authenticate and browse but are denied the native
+  audio keys needed for playback. Switify cannot bypass this; see
+  [Premium account authenticates but cannot play](#premium-account-authenticates-but-cannot-play).
+- Consoles with insufficient free system resources may be unable to launch the
+  overlay service. Memory Kit is an optional third-party, system-level
+  workaround used at the user's own risk; see
+  [Overlay service stays Starting or Dormant](#overlay-service-stays-starting-or-dormant).
 - The standalone NRO and background service are separate native Spotify/audio
   engines. Running both deliberately can produce two slightly offset audio
   streams.
