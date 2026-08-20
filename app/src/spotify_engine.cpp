@@ -962,11 +962,18 @@ size_t curlHeaderCallback(char* data, size_t size, size_t count,
   headers[name] = line.substr(valueStart, valueEnd - valueStart);
   return bytes;
 }
+
+int curlProgressCallback(void* userData, curl_off_t, curl_off_t, curl_off_t,
+                         curl_off_t) {
+  const auto* keepRunning = static_cast<const std::atomic_bool*>(userData);
+  return keepRunning && !keepRunning->load(std::memory_order_relaxed) ? 1 : 0;
+}
 #endif
 
 WebResponse webRequest(const std::string& url, const std::string& method,
                        const std::vector<uint8_t>& requestBody,
-                       const WebHeaders& requestHeaders) {
+                       const WebHeaders& requestHeaders,
+                       const std::atomic_bool* keepRunning) {
 #ifdef __SWITCH__
   static std::once_flag curlInit;
   static CURLcode curlInitResult = CURLE_FAILED_INIT;
@@ -1019,6 +1026,14 @@ WebResponse webRequest(const std::string& url, const std::string& method,
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curlHeaderCallback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
+  if (keepRunning) {
+    // Let shutdown interrupt DNS, connection, and transfer work instead of
+    // making a launcher wait for the full 20-second request timeout.
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curlProgressCallback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
+                     const_cast<std::atomic_bool*>(keepRunning));
+  }
   curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
   curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
   // Bell's current Switch TLS path also operates without a CA bundle. Keep
@@ -1050,6 +1065,7 @@ WebResponse webRequest(const std::string& url, const std::string& method,
   }
   return response;
 #else
+  (void)keepRunning;
   bell::HTTPClient::Headers headers = requestHeaders;
   auto raw = std::make_unique<bell::HTTPClient::Response>();
   raw->connect(url);
@@ -1645,6 +1661,8 @@ bool SpotifyEngine::forgetCredentials() {
 }
 
 void SpotifyEngine::launchWorker(std::function<void()> work) {
+  if (!running.load(std::memory_order_acquire)) return;
+
   // Reap completed joinable threads during normal operation. Keeping every
   // finished std::thread until shutdown retained per-thread resources and
   // amplified an earlier UI retry loop into a GPU/heap OOM. Join reaped
@@ -1696,8 +1714,12 @@ void SpotifyEngine::launchWorker(std::function<void()> work) {
   }
   {
     std::lock_guard<std::mutex> lock(workerMutex);
-    dataWorkers.emplace_back(std::move(next));
+    if (running.load(std::memory_order_acquire))
+      dataWorkers.emplace_back(std::move(next));
   }
+  // Shutdown may have started between thread construction and registration.
+  // Never leave that thread outside dataWorkers where shutdown cannot join it.
+  if (next.thread.joinable()) next.thread.join();
 }
 
 // ---- Token and Web API ---------------------------------------------------
@@ -1734,7 +1756,7 @@ std::string SpotifyEngine::spotifyClientToken() {
         {"Accept", "application/x-protobuf"},
         {"Content-Type", "application/x-protobuf"},
         {"User-Agent", "Spotify/127700358 Linux/0 (Switify)"}};
-    const auto response = webRequest(url, "POST", request, headers);
+    const auto response = webRequest(url, "POST", request, headers, &running);
     nxlog::pushf(
         "Client token HTTP response (status=%d, bytes=%d, length=%s, "
         "transfer=%s)",
@@ -1813,7 +1835,7 @@ std::string SpotifyEngine::login5AccessToken() {
         {"Content-Type", "application/x-protobuf"},
         {"User-Agent", "Spotify/127700358 Linux/0 (Switify)"},
         {"Client-Token", clientToken}};
-    auto response = webRequest(url, "POST", request, headers);
+    auto response = webRequest(url, "POST", request, headers, &running);
     auto& body = response.body;
     if (response.statusCode != 200 || body.empty()) {
       nxlog::pushf("Login5 request failed (HTTP %d, bytes=%d)",
@@ -1900,7 +1922,7 @@ std::string SpotifyEngine::partnerRequest(
     const auto started = std::chrono::steady_clock::now();
     WebResponse response;
     try {
-      response = webRequest(url, "POST", {}, headers);
+      response = webRequest(url, "POST", {}, headers, &running);
     } catch (const std::exception& error) {
       nxlog::pushf("Pathfinder %s transport error: %s", operation.c_str(),
                    error.what());
@@ -1976,7 +1998,7 @@ std::string SpotifyEngine::connectRequest(const std::string& url) {
         {"app-platform", "WebPlayer"},
         {"User-Agent", "Spotify/127700358 Linux/0 (Switify)"}};
     const auto started = std::chrono::steady_clock::now();
-    const auto response = webRequest(url, "GET", {}, headers);
+    const auto response = webRequest(url, "GET", {}, headers, &running);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - started)
                              .count();
@@ -2202,7 +2224,7 @@ std::string SpotifyEngine::apiRequest(const std::string& method,
     const auto requestStarted = std::chrono::steady_clock::now();
     WebResponse response;
     try {
-      response = webRequest(url, method, requestBody, headers);
+      response = webRequest(url, method, requestBody, headers, &running);
     } catch (const std::exception& error) {
       nxlog::pushf("Spotify API %s %s transport error: %s", method.c_str(),
                    path.c_str(), error.what());
@@ -3877,15 +3899,15 @@ void SpotifyEngine::run() {
 void SpotifyEngine::shutdown() {
   if (!running) return;
   savePlaybackSession();
-  running = false;
+  nxlog::push("Spotify shutdown: cancelling background work");
+  running.store(false, std::memory_order_release);
   if (loggedInSemaphore) loggedInSemaphore->give();
   retryCondition.notify_all();
-  if (zeroconfServer) zeroconfServer->stop();
-  if (mdnsService) mdnsService->unregisterService();
-  if (handler) handler->disconnect();
-  if (player) player->disconnect();
-  if (engineThread.joinable()) engineThread.join();
 
+  // Browse workers can use ctx/session to acquire tokens. Cancel their libcurl
+  // transfers through running=false and join them before disconnecting those
+  // dependencies. The previous reverse order was a use-after-disconnect race
+  // whenever the user exited while Home or Library was still loading.
   std::vector<DataWorker> workers;
   {
     std::lock_guard<std::mutex> lock(workerMutex);
@@ -3894,6 +3916,13 @@ void SpotifyEngine::shutdown() {
   for (auto& worker : workers) {
     if (worker.thread.joinable()) worker.thread.join();
   }
+
+  nxlog::push("Spotify shutdown: disconnecting playback session");
+  if (zeroconfServer) zeroconfServer->stop();
+  if (mdnsService) mdnsService->unregisterService();
+  if (handler) handler->disconnect();
+  if (player) player->disconnect();
+  if (engineThread.joinable()) engineThread.join();
 
   switchAudioSink = nullptr;
   player.reset();
@@ -3911,4 +3940,5 @@ void SpotifyEngine::shutdown() {
   login5TokenExpiresAt = 0;
   login5RetryAfter = 0;
   currentState = State::NoConfig;
+  nxlog::push("Spotify shutdown complete");
 }

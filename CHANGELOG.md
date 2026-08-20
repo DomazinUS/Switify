@@ -3,6 +3,29 @@
 All notable Switify changes are documented here. Standalone NRO and overlay
 versions are tracked independently because they are separate applications.
 
+## Standalone NRO 0.7.1 — 2026-08-19
+
+### Fixed
+
+- Fixed a shutdown race exposed by returning to Sphaira while Home, Library,
+  search, or artwork requests were still running. Switify now cancels and joins
+  its network workers before Borealis destroys its activity tree, threading
+  queue, texture cache, and Switch platform services.
+- Reordered Spotify teardown so authenticated browse workers finish before the
+  playback session and token dependencies are disconnected. Active libcurl
+  transfers are now interrupted immediately during exit instead of delaying or
+  racing the launcher handoff.
+- Added a safe-exit fallback for Sphaira running from an application forwarder.
+  After completing normal cleanup, Switify asks Horizon to close the current
+  application through its still-valid applet self-controller instead of
+  returning through Sphaira's failing HBL `appletOE` proxy path. Applet-mode
+  Sphaira, HBMenu, and standalone Switify launches are unchanged.
+- Confirmed through Switify runtime logs, Sphaira logs, and Atmosphere crash
+  reports that Switify's engine, workers, playback session, artwork pipeline,
+  and platform services are fully stopped before the remaining Sphaira/HBL
+  failure. The application-forwarder workaround therefore exits to HOME rather
+  than reporting a launcher failure as a Switify crash.
+
 ## Standalone NRO 0.7.0 — 2026-08-19
 
 ### Added

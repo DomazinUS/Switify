@@ -3,6 +3,9 @@
 #include <borealis.hpp>
 #include <borealis/core/cache_helper.hpp>
 
+#include <atomic>
+#include <cstring>
+
 #ifdef __SWITCH__
 #include <arpa/inet.h>
 #include <sys/stat.h>
@@ -44,11 +47,47 @@ class MainActivity : public brls::Activity {
   }
 };
 
+namespace {
+
+std::atomic_bool runtimeShutdownStarted{false};
+
+bool requiresSphairaApplicationSafeExit() {
+#ifdef __SWITCH__
+  // Sphaira identifies its HBL through EntryType_EndOfList. Returning a
+  // service-heavy NRO through that loader while it is hosted by an application
+  // forwarder can leave HBL's appletOE self-exit request failing with 0xD401.
+  // Applet-mode Sphaira returns normally and must keep its regular handoff.
+  const char* loader = envGetLoaderInfo();
+  return loader && std::strncmp(loader, "sphaira ", 8) == 0 &&
+         appletGetAppletType() == AppletType_Application;
+#else
+  return false;
+#endif
+}
+
+void shutdownRuntime() {
+  if (runtimeShutdownStarted.exchange(true)) return;
+
+  // Borealis fires its exit event before deleting the activity tree, stopping
+  // its sync worker, and destroying the Switch platform. Stop every Switify
+  // worker while those dependencies are still alive. Doing this only after
+  // mainLoop() returned left quick exits racing live dashboard/artwork work.
+  nxlog::push("Runtime shutdown begin");
+  SpotifyEngine::instance().shutdown();
+  swui::shutdownRemoteImages();
+  swplatform::shutdown();
+  nxlog::push("Runtime shutdown complete");
+}
+
+}  // namespace
+
 int main(int argc, char* argv[]) {
   brls::Logger::setLogLevel(brls::LogLevel::LOG_INFO);
 
 #ifdef __SWITCH__
   int nxlinkSocket = -1;
+  const bool sphairaApplicationSafeExit =
+      requiresSphairaApplicationSafeExit();
 #endif
 
   // bell/cspot log through a global pointer that is NULL until installed —
@@ -66,8 +105,10 @@ int main(int argc, char* argv[]) {
     nxlog::push("NetLoader launch detected; connecting live log channel");
     nxlinkSocket = nxlinkStdio();
   }
-  nxlog::pushf("Switify 0.7.0 starting (nxlink live logs: %s)",
+  nxlog::pushf("Switify 0.7.1 starting (nxlink live logs: %s)",
                nxlinkSocket >= 0 ? "connected" : "off");
+  if (sphairaApplicationSafeExit)
+    nxlog::push("Sphaira application loader detected; safe HOME exit enabled");
 #endif
 
   if (!brls::Application::init()) {
@@ -78,6 +119,9 @@ int main(int argc, char* argv[]) {
   brls::Application::createWindow("Switify");
   brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
   brls::Application::setGlobalQuit(false);
+  // Subscribe before TextureCache installs its own exit callback, ensuring
+  // remote image workers cannot touch the cache after Borealis cleans it.
+  brls::Application::getExitEvent()->subscribe([] { shutdownRuntime(); });
   brls::TextureCache::instance().cache.setCapacity(128);
   swplatform::initialize();
 
@@ -118,11 +162,37 @@ int main(int argc, char* argv[]) {
 #endif
   }
 
-  swplatform::shutdown();
-  swui::shutdownRemoteImages();
-  SpotifyEngine::instance().shutdown();
+  // Non-Borealis platforms or an initialization edge case may return without
+  // firing the event. Keep cleanup idempotent as a final safety net.
+  shutdownRuntime();
 #ifdef __SWITCH__
   if (nxlinkSocket >= 0) nxlog::drain();
+  if (sphairaApplicationSafeExit) {
+    // Ask Horizon to close the application while libnx's valid applet proxy
+    // and ISelfController are still alive. Sphaira HBL attempts the same Exit
+    // command only after the NRO and its applet sessions are gone; obtaining a
+    // fresh proxy at that point is the request that fails with 0xD401.
+    fsdevCommitDevice("sdmc");
+    Service* self = appletGetServiceSession_SelfController();
+    const Result result =
+        serviceIsActive(self) ? serviceDispatch(self, 0)
+                              : KERNELRESULT(InvalidState);
+    nxlog::pushf("Sphaira safe HOME exit request: 0x%x", result);
+    nxlog::drain();
+    if (nxlinkSocket >= 0) {
+      close(nxlinkSocket);
+      nxlinkSocket = -1;
+    }
+
+    if (R_SUCCEEDED(result)) {
+      // This mirrors Sphaira HBL's successful selfExit path: the applet
+      // manager owns termination now, so do not return to HBL and race it.
+      while (true) svcSleepThread(86400000000000ULL);
+    }
+
+    nxlog::push("Sphaira safe HOME exit request failed; returning to loader");
+    nxlog::drain();
+  }
   if (nxlinkSocket >= 0) close(nxlinkSocket);
 #else
   nxlog::drain();

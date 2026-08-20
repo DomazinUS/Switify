@@ -23,7 +23,7 @@ endif ()
 
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "7")
-set(VERSION_ALTER "0")
+set(VERSION_ALTER "1")
 set(PROJECT_AUTHOR "HiroshiYamauchi")
 set(PROJECT_TITLEID "010ff000ffff0117")
 set(PACKAGE_NAME "app.switify")

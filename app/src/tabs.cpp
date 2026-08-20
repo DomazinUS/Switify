@@ -2183,7 +2183,7 @@ SettingsTab::SettingsTab()
   aboutHeader->setMarginTop(16);
   content->addView(aboutHeader);
   content->addView(swui::makeStatePanel(
-      "Switify 0.7.0",
+      "Switify 0.7.1",
       "Created by HiroshiYamauchi\nA controller-first native Spotify client "
       "for Nintendo Switch homebrew."));
 
@@ -2191,7 +2191,7 @@ SettingsTab::SettingsTab()
       "About and credits",
       [](brls::View*) {
         showInformationPage(
-            "About Switify", "Version 0.7.0",
+            "About Switify", "Version 0.7.1",
             {{"Created by HiroshiYamauchi",
               "A controller-first native Spotify client for Nintendo Switch "
               "homebrew."},
@@ -2218,7 +2218,14 @@ SettingsTab::SettingsTab()
       [](brls::View*) {
         showInformationPage(
             "Changelog", "Complete Switify development history",
-            {{"Standalone 0.7.0 · lyrics, podcasts, and full player",
+            {{"Standalone 0.7.1 · safe Sphaira-forwarder exit",
+              "Completes Spotify, network, artwork, and Borealis teardown "
+              "before exiting. When Sphaira itself runs from an application "
+              "forwarder, Switify now exits safely to HOME instead of "
+              "returning through Sphaira HBL's failing late applet-exit path. "
+              "HBMenu, applet-mode Sphaira, and direct forwarders retain "
+              "their normal exit behavior."},
+             {"Standalone 0.7.0 · lyrics, podcasts, and full player",
               "Added full lyrics with Musixmatch line synchronization, live "
               "current/upcoming lines, and active-line highlighting. Added "
               "full-player synced lyrics plus Black, RGB Gradient, and RGB "

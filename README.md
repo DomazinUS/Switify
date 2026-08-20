@@ -21,7 +21,7 @@ independently installed experiences:
 
 | Component | Current version | Purpose |
 | --- | ---: | --- |
-| **Switify NRO** | **0.7.0** | Full-screen Home, Search, Library, collection browsing, first-time login, lyrics, and native playback. |
+| **Switify NRO** | **0.7.1** | Full-screen Home, Search, Library, collection browsing, first-time login, lyrics, and native playback. |
 | **Switify Overlay** | **0.5.0** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
 
 The two products do not share a process or live playback engine. They share
@@ -82,14 +82,14 @@ then launch Switify.
 The [latest release](https://github.com/DomazinUS/Switify/releases/latest)
 contains:
 
-- `Switify-0.7.0.zip` — standalone full-screen application
+- `Switify-0.7.1.zip` — standalone full-screen application
 - `Switify-Overlay-0.5.0.zip` — Ultrahand overlay and dormant background service
-- `Switify-source-0.7.0.zip` — corresponding buildable source snapshot
+- `Switify-source-0.7.1.zip` — corresponding buildable source snapshot
 - `SHA256SUMS.txt` — SHA-256 checksums for all three archives
 
 ## Install the standalone app
 
-1. Download `Switify-0.7.0.zip` and extract it to the root of the SD card.
+1. Download `Switify-0.7.1.zip` and extract it to the root of the SD card.
 2. Confirm that the resulting file is
    `sdmc:/switch/Switify/Switify.nro`.
 3. Return the SD card to the console and launch Switify through title override.
@@ -154,6 +154,11 @@ release archive.
   streams.
 - Switify streams audio and does not download Spotify music for offline use.
 - Switify depends on undocumented Spotify protocols that Spotify may change.
+- If Sphaira itself was launched through an application forwarder, Switify
+  exits to the Switch HOME screen. Returning through that particular Sphaira
+  HBL path fails after Switify has completely shut down; exiting to HOME avoids
+  the upstream launcher crash. HBMenu, applet-mode Sphaira, and direct Switify
+  forwarders keep their normal exit behavior.
 
 ## Diagnostics
 
