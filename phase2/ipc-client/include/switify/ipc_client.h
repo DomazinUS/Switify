@@ -23,6 +23,8 @@ Result switifyIpcPause(void);
 Result switifyIpcNext(void);
 Result switifyIpcPrevious(void);
 Result switifyIpcSetVolume(uint32_t volumePermille);
+Result switifyIpcSetGameVolume(uint32_t volumePermille);
+Result switifyIpcRestoreGameVolume(void);
 Result switifyIpcSeek(uint32_t positionMs);
 Result switifyIpcSetShuffle(bool enabled);
 Result switifyIpcSetRepeatMode(SwitifyRepeatMode mode);

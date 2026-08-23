@@ -40,6 +40,8 @@ class ServiceCore {
   void clearTrack(uint64_t monotonicMs);
   void publishQueue(uint32_t index, uint32_t count, uint64_t monotonicMs);
   void publishVolume(uint32_t volumePermille, uint64_t monotonicMs);
+  void publishGameVolume(uint32_t volumePermille, bool gameRunning,
+                         uint64_t monotonicMs);
   void publishConnection(bool connected, bool hasCredentials,
                          uint64_t monotonicMs);
   void publishShuffle(bool enabled, uint64_t monotonicMs);

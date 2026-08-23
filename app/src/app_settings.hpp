@@ -7,6 +7,7 @@ enum class PlayerBackgroundMode { Off = 0, Gradient = 1, Solid = 2 };
 struct Snapshot {
   bool playbackShortcuts = false;
   float outputVolume = 0.8f;
+  float gameVolume = 1.0f;
   bool highQuality = false;
   PlayerBackgroundMode playerBackgroundMode = PlayerBackgroundMode::Solid;
   bool showSyncedLyricsInFullPlayer = true;
@@ -23,6 +24,7 @@ bool playbackShortcutsEnabled();
 void setPlaybackShortcutsEnabled(bool enabled);
 
 void setOutputVolume(float volume);
+void setGameVolume(float volume);
 void setHighQuality(bool enabled);
 
 PlayerBackgroundMode playerBackgroundMode();

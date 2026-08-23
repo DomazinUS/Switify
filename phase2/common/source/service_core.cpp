@@ -11,6 +11,7 @@ ServiceCore::ServiceCore() {
   status.service_state = SwitifyServiceState_Booting;
   status.playback_state = SwitifyPlaybackState_Stopped;
   status.volume_permille = 800;
+  status.game_volume_permille = 1000;
   status.queue_index = SWITIFY_IPC_INVALID_INDEX;
   status.last_result = SwitifyControlResult_BackendUnavailable;
   browser.struct_size = sizeof(browser);
@@ -119,6 +120,15 @@ void ServiceCore::publishVolume(uint32_t volumePermille,
                                 uint64_t monotonicMs) {
   std::scoped_lock lock(mutex);
   status.volume_permille = std::min(volumePermille, 1000u);
+  changedLocked(monotonicMs);
+}
+
+void ServiceCore::publishGameVolume(uint32_t volumePermille,
+                                    bool gameRunning,
+                                    uint64_t monotonicMs) {
+  std::scoped_lock lock(mutex);
+  status.game_volume_permille = std::min(volumePermille, 1000u);
+  setFlagLocked(SwitifyStatusFlag_GameRunning, gameRunning);
   changedLocked(monotonicMs);
 }
 
@@ -236,7 +246,9 @@ bool ServiceCore::isControlCommand(SwitifyIpcCommand command) {
   return (command >= SwitifyIpcCommand_PlayPause &&
           command <= SwitifyIpcCommand_SetAudioQuality) ||
          (command >= SwitifyIpcCommand_BrowseHome &&
-          command <= SwitifyIpcCommand_BrowseQueue);
+          command <= SwitifyIpcCommand_BrowseQueue) ||
+         (command >= SwitifyIpcCommand_SetGameVolume &&
+          command <= SwitifyIpcCommand_RestoreGameVolume);
 }
 
 SwitifyControlResult ServiceCore::validate(SwitifyIpcCommand command,
@@ -244,6 +256,8 @@ SwitifyControlResult ServiceCore::validate(SwitifyIpcCommand command,
   if (!isControlCommand(command))
     return SwitifyControlResult_InvalidCommand;
   if (command == SwitifyIpcCommand_SetVolume && value > 1000)
+    return SwitifyControlResult_InvalidArgument;
+  if (command == SwitifyIpcCommand_SetGameVolume && value > 1000)
     return SwitifyControlResult_InvalidArgument;
   if (command == SwitifyIpcCommand_SetShuffle && value > 1)
     return SwitifyControlResult_InvalidArgument;
@@ -272,6 +286,7 @@ SwitifyControlResult ServiceCore::submit(SwitifyIpcCommand command,
         command == SwitifyIpcCommand_Play ||
         command == SwitifyIpcCommand_Pause ||
         command == SwitifyIpcCommand_SetVolume ||
+        command == SwitifyIpcCommand_SetGameVolume ||
         command == SwitifyIpcCommand_Seek ||
         command == SwitifyIpcCommand_SetShuffle ||
         command == SwitifyIpcCommand_SetRepeatMode ||

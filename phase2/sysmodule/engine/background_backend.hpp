@@ -1,6 +1,7 @@
 #pragma once
 
 #include "spotify_engine.hpp"
+#include "game_volume_controller.hpp"
 #include "switify/service_core.hpp"
 
 #include <atomic>
@@ -99,6 +100,7 @@ class BackgroundBackend {
 
   ServiceCore& core;
   SpotifyEngine& engine;
+  GameVolumeController gameVolume;
   std::atomic<bool> running{false};
   std::thread worker;
   std::chrono::steady_clock::time_point nextReconnect{};

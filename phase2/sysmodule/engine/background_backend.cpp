@@ -85,14 +85,16 @@ uint64_t BackgroundBackend::monotonicMs() {
 bool BackgroundBackend::start() {
   if (running.exchange(true)) return false;
 
-  const uint64_t capabilities =
+  swsettings::load();
+  const auto settings = swsettings::get();
+  const bool gameVolumeReady = gameVolume.initialize(settings.gameVolume);
+  uint64_t capabilities =
       SwitifyIpcCapability_Status |
       SwitifyIpcCapability_PlaybackControl | SwitifyIpcCapability_Seek |
       SwitifyIpcCapability_Queue | SwitifyIpcCapability_Browsing |
       SwitifyIpcCapability_Search | SwitifyIpcCapability_AudioSettings;
+  if (gameVolumeReady) capabilities |= SwitifyIpcCapability_GameVolume;
   core.configureCommands(true, capabilities, monotonicMs());
-  swsettings::load();
-  const auto settings = swsettings::get();
   engine.setVolume(settings.outputVolume);
   engine.setHighQuality(settings.highQuality);
   engine.setInteractiveAuthentication(false);
@@ -106,6 +108,7 @@ void BackgroundBackend::stop() {
   if (!running.exchange(false)) return;
   core.configureCommands(false, SwitifyIpcCapability_Status, monotonicMs());
   if (worker.joinable()) worker.join();
+  gameVolume.shutdown();
   engine.shutdown();
   nxlog::push("Background Spotify backend stopped");
 }
@@ -142,6 +145,20 @@ void BackgroundBackend::process(const ControlMessage& message) {
       engine.setVolume(message.value / 1000.0f);
       swsettings::setOutputVolume(message.value / 1000.0f);
       result = SwitifyControlResult_Ok;
+      break;
+    case SwitifyIpcCommand_SetGameVolume:
+      if (gameVolume.ready()) {
+        gameVolume.setVolume(message.value / 1000.0f);
+        swsettings::setGameVolume(message.value / 1000.0f);
+        result = SwitifyControlResult_Ok;
+      } else {
+        result = SwitifyControlResult_BackendUnavailable;
+      }
+      break;
+    case SwitifyIpcCommand_RestoreGameVolume:
+      result = gameVolume.restoreCurrent()
+                   ? SwitifyControlResult_Ok
+                   : SwitifyControlResult_BackendUnavailable;
       break;
     case SwitifyIpcCommand_Seek:
       if (ready) engine.seekToMs(message.value);
@@ -860,6 +877,9 @@ void BackgroundBackend::publishSnapshot() {
   core.publishVolume(static_cast<uint32_t>(
                          std::clamp(playback.volume, 0.0f, 1.0f) * 1000.0f),
                      now);
+  core.publishGameVolume(
+      static_cast<uint32_t>(gameVolume.volume() * 1000.0f),
+      gameVolume.gameRunning(), now);
   core.publishQueue(session.hasCurrent
                         ? static_cast<uint32_t>(session.currentIndex)
                         : SWITIFY_IPC_INVALID_INDEX,
@@ -887,6 +907,8 @@ void BackgroundBackend::run() {
       for (size_t processed = 0; processed < 8 && core.tryPop(message);
            ++processed)
         process(message);
+
+      gameVolume.tick();
 
       const auto now = std::chrono::steady_clock::now();
       if (now >= nextSnapshot) {

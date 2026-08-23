@@ -13,7 +13,7 @@ extern "C" {
 #define SWITIFY_IPC_SERVICE_NAME "switify"
 
 #define SWITIFY_IPC_API_VERSION_MAJOR 1u
-#define SWITIFY_IPC_API_VERSION_MINOR 2u
+#define SWITIFY_IPC_API_VERSION_MINOR 3u
 #define SWITIFY_IPC_API_VERSION \
     ((SWITIFY_IPC_API_VERSION_MAJOR << 16u) | SWITIFY_IPC_API_VERSION_MINOR)
 
@@ -49,6 +49,9 @@ typedef enum SwitifyIpcCommand {
     SwitifyIpcCommand_BrowsePlay = 35,
     SwitifyIpcCommand_BrowseCurrentPlaylist = 36,
     SwitifyIpcCommand_BrowseQueue = 37,
+
+    SwitifyIpcCommand_SetGameVolume = 40,
+    SwitifyIpcCommand_RestoreGameVolume = 41,
 } SwitifyIpcCommand;
 
 typedef enum SwitifyIpcCapability {
@@ -60,6 +63,7 @@ typedef enum SwitifyIpcCapability {
     SwitifyIpcCapability_Browsing = UINT64_C(1) << 5u,
     SwitifyIpcCapability_Search = UINT64_C(1) << 6u,
     SwitifyIpcCapability_AudioSettings = UINT64_C(1) << 7u,
+    SwitifyIpcCapability_GameVolume = UINT64_C(1) << 8u,
 } SwitifyIpcCapability;
 
 typedef enum SwitifyServiceState {
@@ -94,6 +98,7 @@ typedef enum SwitifyStatusFlag {
     SwitifyStatusFlag_CanSeek = 1u << 5u,
     SwitifyStatusFlag_HasTrack = 1u << 6u,
     SwitifyStatusFlag_HighQuality = 1u << 7u,
+    SwitifyStatusFlag_GameRunning = 1u << 8u,
 } SwitifyStatusFlag;
 
 typedef enum SwitifyControlResult {
@@ -174,7 +179,7 @@ typedef struct SwitifyIpcStatus {
     uint32_t queue_index;
     uint32_t queue_count;
     uint32_t last_result;
-    uint32_t reserved0;
+    uint32_t game_volume_permille;
     char title[64];
     char artist[48];
     char album[40];
