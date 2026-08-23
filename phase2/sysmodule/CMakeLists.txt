@@ -28,6 +28,7 @@ set(CSPOT_USE_PREGEN_PROTO ON CACHE BOOL "" FORCE)
 set(BELL_DISABLE_SINKS ON CACHE BOOL "" FORCE)
 set(BELL_DISABLE_WEBSERVER ON CACHE BOOL "" FORCE)
 set(BELL_DISABLE_MQTT ON CACHE BOOL "" FORCE)
+set(BELL_DISABLE_REGEX ON CACHE BOOL "" FORCE)
 set(BELL_CODEC_VORBIS ON CACHE BOOL "" FORCE)
 # SpotifyEngine explicitly requests OGG Vorbis 160/320 and cspot falls back
 # to OGG Vorbis 96. AAC, MP3, ALAC, and Opus cannot be selected by either the
@@ -42,6 +43,7 @@ add_subdirectory(../../vendor/cspot ${CMAKE_CURRENT_BINARY_DIR}/cspot)
 add_executable(switify-background
   engine/main.cpp
   engine/background_backend.cpp
+  engine/game_volume_controller.cpp
   source/ipc_server.c
   source/ipc_self_test.cpp
   source/switify_service.cpp

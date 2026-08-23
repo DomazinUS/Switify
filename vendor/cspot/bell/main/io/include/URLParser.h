@@ -4,6 +4,7 @@
 #include <regex>      // for match_results, match_results<>::value_type, sub...
 #include <stdexcept>  // for invalid_argument
 #include <string>     // for string, allocator, operator+, char_traits, oper...
+#include <vector>
 
 namespace bell {
 class URLParser {

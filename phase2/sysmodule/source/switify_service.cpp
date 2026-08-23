@@ -88,6 +88,7 @@ Result handle(void*, const SwitifyIpcServerRequest* request, uint8_t* output,
 
   uint32_t value = 0;
   if (command == SwitifyIpcCommand_SetVolume ||
+      command == SwitifyIpcCommand_SetGameVolume ||
       command == SwitifyIpcCommand_Seek ||
       command == SwitifyIpcCommand_SetShuffle ||
       command == SwitifyIpcCommand_SetRepeatMode ||

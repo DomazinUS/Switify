@@ -20,9 +20,9 @@
 namespace {
 
 #ifdef SWITIFY_LIGHTWEIGHT_OVERLAY
-constexpr const char* OverlayVersion = "v0.5.0-lite1";
+constexpr const char* OverlayVersion = "v0.5.3-lite1";
 #else
-constexpr const char* OverlayVersion = "v0.5.0";
+constexpr const char* OverlayVersion = "v0.5.3";
 #endif
 
 constexpr uint64_t SwitifyProgramId = UINT64_C(0x4200000000535754);
@@ -180,6 +180,11 @@ bool controlsAvailable() {
   return connectionState == ConnectionState::Connected &&
          currentStatus.service_state == SwitifyServiceState_Ready &&
          (capabilities & SwitifyIpcCapability_PlaybackControl) != 0;
+}
+
+bool gameVolumeAvailable() {
+  return connectionState == ConnectionState::Connected &&
+         (capabilities & SwitifyIpcCapability_GameVolume) != 0;
 }
 
 void refreshServiceState(bool updateFeedback = true) {
@@ -395,14 +400,22 @@ void superviseAutomaticService(bool force = false) {
 void stopService() {
   automaticLaunchActive = false;
   automaticObservedPid = 0;
-  disconnectIpc();
   if (!processIsRunning()) {
+    disconnectIpc();
     runningPid = 0;
     connectionState = ConnectionState::Dormant;
     serviceText = "Dormant";
     feedbackText = "Background playback is already stopped";
     return;
   }
+
+  // Ask the worker to remove attenuation before pm:shell forcibly terminates
+  // it. A forced process stop does not run C++ destructors.
+  if (switifyIpcIsActive() &&
+      (capabilities & SwitifyIpcCapability_GameVolume) != 0 &&
+      R_SUCCEEDED(switifyIpcRestoreGameVolume()))
+    svcSleepThread(UINT64_C(150000000));
+  disconnectIpc();
 
   Result result = pmshellInitialize();
   if (R_FAILED(result)) {
@@ -428,6 +441,17 @@ template <typename Command>
 bool dispatchControl(const char* description, Command command) {
   if (!controlsAvailable()) {
     feedbackText = "Playback controls are not ready";
+    return false;
+  }
+  const Result result = command();
+  feedbackText = R_SUCCEEDED(result) ? description : resultText(result);
+  return R_SUCCEEDED(result);
+}
+
+template <typename Command>
+bool dispatchGameVolume(const char* description, Command command) {
+  if (!gameVolumeAvailable()) {
+    feedbackText = "Game volume is unavailable (aud:a may be in use)";
     return false;
   }
   const Result result = command();
@@ -468,7 +492,7 @@ void drawOutline(tsl::gfx::Renderer* renderer, s32 x, s32 y, s32 width,
 
 class PlayerElement final : public tsl::elm::Element {
  public:
-  static constexpr s32 Height = 475;
+  static constexpr s32 Height = 520;
 
   tsl::elm::Element* requestFocus(tsl::elm::Element*,
                                   tsl::FocusDirection) override {
@@ -504,6 +528,10 @@ class PlayerElement final : public tsl::elm::Element {
         focus = 2;
         return true;
       }
+      if (focus == 7) {
+        focus = 6;
+        return true;
+      }
       return false;
     }
     if (keys & HidNpadButton_Down) {
@@ -513,6 +541,10 @@ class PlayerElement final : public tsl::elm::Element {
       }
       if (focus < 5) {
         focus = 6;
+        return true;
+      }
+      if (focus == 6 && gameVolumeAvailable()) {
+        focus = 7;
         return true;
       }
       return false;
@@ -535,6 +567,17 @@ class PlayerElement final : public tsl::elm::Element {
       }
       if (keys & HidNpadButton_Right) {
         changeVolume(50);
+        return true;
+      }
+      return false;
+    }
+    if (focus == 7) {
+      if (keys & HidNpadButton_Left) {
+        changeGameVolume(-50);
+        return true;
+      }
+      if (keys & HidNpadButton_Right) {
+        changeGameVolume(50);
         return true;
       }
       return false;
@@ -663,7 +706,7 @@ class PlayerElement final : public tsl::elm::Element {
     const uint32_t volume = std::min(UINT32_C(1000),
                                      currentStatus.volume_permille);
     // Keep the label on the slider's row. Only the percentage belongs above.
-    renderer->drawString("Volume", false, x + 20, volumeBarY + 6, 16, text);
+    renderer->drawString("Music", false, x + 20, volumeBarY + 6, 16, text);
     const std::string volumeText = std::to_string(volume / 10) + "%";
     const auto [volumeTextWidth, volumeTextHeight] = renderer->drawString(
         volumeText, false, 0, 0, 16, tsl::style::color::ColorTransparent);
@@ -680,6 +723,38 @@ class PlayerElement final : public tsl::elm::Element {
       renderer->drawRect(volumeBarX, volumeBarY - 2, volumeFill, 7, green);
     renderer->drawCircle(volumeBarX + volumeFill, volumeBarY + 1, 6, true,
                          green);
+
+    const bool gameControl = gameVolumeAvailable();
+    const bool gameRunning =
+        currentStatus.flags & SwitifyStatusFlag_GameRunning;
+    const s32 gamePercentY = volumePercentY + 44;
+    const s32 gameBarY = volumeBarY + 44;
+    const uint32_t gameVolume = std::min(
+        UINT32_C(1000), currentStatus.game_volume_permille);
+    const tsl::Color gameColor = gameControl ? green : dimGreen;
+    const tsl::Color gameTextColor = gameControl ? text : dim;
+    renderer->drawString(gameRunning ? "Game" : "Game (next)", false,
+                         x + 20, gameBarY + 6, 16, gameTextColor);
+    const std::string gameVolumeText =
+        gameControl ? std::to_string(gameVolume / 10) + "%" : "Unavailable";
+    const auto [gameTextWidth, gameTextHeight] = renderer->drawString(
+        gameVolumeText, false, 0, 0, 16,
+        tsl::style::color::ColorTransparent);
+    (void)gameTextHeight;
+    renderer->drawString(gameVolumeText, false,
+                         x + width - 20 - gameTextWidth, gamePercentY, 16,
+                         gameTextColor);
+    if (hasFocus() && focus == 7)
+      renderer->drawRect(volumeBarX - 3, gameBarY - 5,
+                         volumeBarWidth + 6, 13, a({0x1, 0xD, 0x6, 0x7}));
+    renderer->drawRect(volumeBarX, gameBarY, volumeBarWidth, 3,
+                       a({0xA, 0xA, 0xA, 0xA}));
+    const s32 gameFill =
+        static_cast<s32>(volumeBarWidth * gameVolume / 1000.0f);
+    if (gameFill > 0)
+      renderer->drawRect(volumeBarX, gameBarY - 2, gameFill, 7, gameColor);
+    renderer->drawCircle(volumeBarX + gameFill, gameBarY + 1, 6, true,
+                         gameColor);
   }
 
  private:
@@ -758,6 +833,16 @@ class PlayerElement final : public tsl::elm::Element {
           return switifyIpcSetVolume(static_cast<uint32_t>(value));
         }))
       currentStatus.volume_permille = static_cast<uint32_t>(value);
+  }
+
+  void changeGameVolume(int32_t delta) {
+    const int32_t value = std::clamp<int32_t>(
+        static_cast<int32_t>(currentStatus.game_volume_permille) + delta, 0,
+        1000);
+    if (dispatchGameVolume("Game volume changed", [value] {
+          return switifyIpcSetGameVolume(static_cast<uint32_t>(value));
+        }))
+      currentStatus.game_volume_permille = static_cast<uint32_t>(value);
   }
 
   void toggleRepeat() {

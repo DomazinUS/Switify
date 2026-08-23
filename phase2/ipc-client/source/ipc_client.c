@@ -68,6 +68,14 @@ Result switifyIpcSetVolume(uint32_t volumePermille) {
   return dispatchU32(SwitifyIpcCommand_SetVolume, volumePermille);
 }
 
+Result switifyIpcSetGameVolume(uint32_t volumePermille) {
+  return dispatchU32(SwitifyIpcCommand_SetGameVolume, volumePermille);
+}
+
+Result switifyIpcRestoreGameVolume(void) {
+  return dispatchNoInput(SwitifyIpcCommand_RestoreGameVolume);
+}
+
 Result switifyIpcSeek(uint32_t positionMs) {
   return dispatchU32(SwitifyIpcCommand_Seek, positionMs);
 }

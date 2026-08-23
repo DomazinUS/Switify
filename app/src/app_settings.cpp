@@ -22,6 +22,7 @@ constexpr const char* kSettingsFile = "settings.json";
 
 std::atomic_bool gPlaybackShortcuts{false};
 std::atomic<float> gOutputVolume{0.8f};
+std::atomic<float> gGameVolume{1.0f};
 std::atomic_bool gHighQuality{false};
 std::atomic<int> gPlayerBackgroundMode{
     static_cast<int>(PlayerBackgroundMode::Solid)};
@@ -43,9 +44,10 @@ void save() {
 #endif
   const auto snapshot = get();
   nlohmann::json json = {
-      {"version", 4},
+      {"version", 5},
       {"playback_shortcuts", snapshot.playbackShortcuts},
       {"output_volume", snapshot.outputVolume},
+      {"game_volume", snapshot.gameVolume},
       {"audio_quality", snapshot.highQuality ? "high" : "normal"},
       {"player_background_mode",
        static_cast<int>(snapshot.playerBackgroundMode)},
@@ -69,6 +71,7 @@ void load() {
     file >> json;
     gPlaybackShortcuts = json.value("playback_shortcuts", false);
     gOutputVolume = clampVolume(json.value("output_volume", 0.8f));
+    gGameVolume = clampVolume(json.value("game_volume", 1.0f));
     gHighQuality = json.value("audio_quality", std::string("normal")) ==
                    "high";
     int backgroundMode = static_cast<int>(PlayerBackgroundMode::Solid);
@@ -98,6 +101,7 @@ Snapshot get() {
   Snapshot snapshot;
   snapshot.playbackShortcuts = gPlaybackShortcuts.load();
   snapshot.outputVolume = gOutputVolume.load();
+  snapshot.gameVolume = gGameVolume.load();
   snapshot.highQuality = gHighQuality.load();
   snapshot.playerBackgroundMode =
       static_cast<PlayerBackgroundMode>(gPlayerBackgroundMode.load());
@@ -119,6 +123,11 @@ void setPlaybackShortcutsEnabled(bool enabled) {
 
 void setOutputVolume(float volume) {
   gOutputVolume = clampVolume(volume);
+  save();
+}
+
+void setGameVolume(float volume) {
+  gGameVolume = clampVolume(volume);
   save();
 }
 

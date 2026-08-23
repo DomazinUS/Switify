@@ -4,47 +4,52 @@ namespace bell {
 
 #ifdef BELL_DISABLE_REGEX
 void URLParser::parse(const char* url, std::vector<std::string>& match) {
-  match[0] = url;
-  char scratch[512];
-
-  /* Parsing the following (http|https://[host][/path][?query]#hash] as in regex 
-     * below. This needs to be changed if you update that regex */
-
-  // get the schema
-  if (sscanf(url, "%[^:]:/", scratch) > 0)
-    match[1] = scratch;
-
-  // get the host
-  if (sscanf(url, "htt%*[^:]://%512[^/#?]", scratch) > 0)
-    match[2] = scratch;
-
-  // get the path
-  url = strstr(url, match[2].c_str()) + match[2].size();
-  if (sscanf(url, "/%512[^?]", scratch) > 0)
-    match[3] = scratch;
-  else if (*url && *url != '?' && *url != '#')
-    url++;
-
-  // get the query
-  if (match[3].size())
-    url += match[3].size() + 1;
-  if (sscanf(url, "?%512[^#]", scratch) > 0)
-    match[4] = scratch;
-
-  // get the hash
-  if (match[4].size())
-    url += match[4].size() + 1;
-  if (sscanf(url, "#%512s", scratch) > 0)
-    match[5] = scratch;
-
-  // fix the acquired items
-  match[3] = "/" + match[3];
-  if (match[4].size())
-    match[4] = "?" + match[4];
-
-  // need at least schema and host
-  if (match[1].size() == 0 || match[2].size() == 0)
+  if (!url || match.size() < 6) {
     match.clear();
+    return;
+  }
+
+  const std::string value(url);
+  match.assign(6, {});
+  match[0] = value;
+
+  const size_t schemeEnd = value.find("://");
+  if (schemeEnd == std::string::npos || schemeEnd == 0) {
+    match.clear();
+    return;
+  }
+
+  const size_t authorityStart = schemeEnd + 3;
+  const size_t authorityEnd = value.find_first_of("/?#", authorityStart);
+  match[1] = value.substr(0, schemeEnd);
+  match[2] = value.substr(
+      authorityStart, authorityEnd == std::string::npos
+                          ? std::string::npos
+                          : authorityEnd - authorityStart);
+  if (match[2].empty()) {
+    match.clear();
+    return;
+  }
+
+  if (authorityEnd == std::string::npos) return;
+  size_t cursor = authorityEnd;
+  if (value[cursor] == '/') {
+    const size_t pathEnd = value.find_first_of("?#", cursor);
+    match[3] = value.substr(cursor, pathEnd == std::string::npos
+                                       ? std::string::npos
+                                       : pathEnd - cursor);
+    if (pathEnd == std::string::npos) return;
+    cursor = pathEnd;
+  }
+  if (value[cursor] == '?') {
+    const size_t queryEnd = value.find('#', cursor);
+    match[4] = value.substr(cursor, queryEnd == std::string::npos
+                                       ? std::string::npos
+                                       : queryEnd - cursor);
+    if (queryEnd == std::string::npos) return;
+    cursor = queryEnd;
+  }
+  if (value[cursor] == '#') match[5] = value.substr(cursor);
 }
 #else
 const std::regex URLParser::urlParseRegex = std::regex(

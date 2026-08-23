@@ -22,6 +22,7 @@ int main() {
   assert(status.service_state == SwitifyServiceState_Booting);
   assert(status.playback_state == SwitifyPlaybackState_Stopped);
   assert(status.volume_permille == 800);
+  assert(status.game_volume_permille == 1000);
   assert(status.queue_index == SWITIFY_IPC_INVALID_INDEX);
   assert(core.capabilities() == SwitifyIpcCapability_Status);
 
@@ -56,6 +57,12 @@ int main() {
          SwitifyControlResult_Ok);
   assert(core.submit(SwitifyIpcCommand_SetVolume, 1001, 108) ==
          SwitifyControlResult_InvalidArgument);
+  assert(core.submit(SwitifyIpcCommand_SetGameVolume, 450, 108) ==
+         SwitifyControlResult_Ok);
+  assert(core.submit(SwitifyIpcCommand_SetGameVolume, 1001, 108) ==
+         SwitifyControlResult_InvalidArgument);
+  assert(core.submit(SwitifyIpcCommand_RestoreGameVolume, 0, 108) ==
+         SwitifyControlResult_Ok);
   assert(core.submit(SwitifyIpcCommand_SetRepeatMode,
                      SwitifyRepeatMode_One, 108) ==
          SwitifyControlResult_Ok);
@@ -73,13 +80,20 @@ int main() {
   assert(message.value == 750);
   assert(message.sequence == 2);
   assert(core.tryPop(message));
+  assert(message.command == SwitifyIpcCommand_SetGameVolume);
+  assert(message.value == 450);
+  assert(message.sequence == 3);
+  assert(core.tryPop(message));
+  assert(message.command == SwitifyIpcCommand_RestoreGameVolume);
+  assert(message.sequence == 4);
+  assert(core.tryPop(message));
   assert(message.command == SwitifyIpcCommand_SetRepeatMode);
   assert(message.value == SwitifyRepeatMode_One);
-  assert(message.sequence == 3);
+  assert(message.sequence == 5);
   assert(core.tryPop(message));
   assert(message.command == SwitifyIpcCommand_SetAudioQuality);
   assert(message.value == 1);
-  assert(message.sequence == 4);
+  assert(message.sequence == 6);
   assert(!core.tryPop(message));
 
   // Explicit state controls are coalesced while the engine thread is busy.
@@ -110,6 +124,10 @@ int main() {
   core.publishAudioQuality(true, 108);
   status = core.snapshot();
   assert(status.flags & SwitifyStatusFlag_HighQuality);
+  core.publishGameVolume(350, true, 108);
+  status = core.snapshot();
+  assert(status.game_volume_permille == 350);
+  assert(status.flags & SwitifyStatusFlag_GameRunning);
 
   const uint64_t browseGeneration =
       core.beginBrowse("Home", "For you", 0, 109);
