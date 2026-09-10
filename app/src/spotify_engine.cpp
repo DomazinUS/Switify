@@ -151,7 +151,7 @@ const std::unordered_map<std::string, std::string> PATHFINDER_HASHES = {
     {"fetchPlaylist",
      "86dde7b9d9356e2369414647cf6950cfed96e778e129cfdfc99aea6c1613b3b0"},
     {"getAlbum",
-     "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10"},
+     "6a74b456cd1735c9193d9e8ec8cc5184cad7ce13572210315229db3975964361"},
     {"queryHomeSection",
      "aa46a47bd094b8abb08bb30fc26b66adba6417463be7345bdb05c9c69faabd5b"},
     {"libraryV3",
