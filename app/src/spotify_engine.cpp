@@ -159,7 +159,7 @@ const std::unordered_map<std::string, std::string> PATHFINDER_HASHES = {
     {"profileAttributes",
      "08ffb4730af3746e04a8301396f20875dbbce10c75243803091a9274eacc8ac0"},
     {"queryArtistOverview",
-     "ae0e2958a4ab645b35ca19ac04d0495ae12d9c5d7b7286217674801a9aab281a"},
+     "7bdc7185c219898c7a2b659cfff2f8ce066dd2d9a97f8b7c4bde92ccfec28310"},
     {"queryPodcastEpisodes",
      "06046f9b939d56c8eb7cdbb687da938de1164c006871aec91dc26e4dc7d8eb08"},
     {"searchDesktop",
