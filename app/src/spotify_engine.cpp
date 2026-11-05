@@ -37,6 +37,16 @@
 #include "nlohmann/json.hpp"
 #include "protobuf/login5.pb.h"
 
+#ifdef SWITIFY_BACKGROUND_SERVICE
+#include <mbedtls/base64.h>
+#include <zlib.h>
+
+#include <cstring>
+#include <thread>
+
+#include "websocket_client.hpp"
+#endif
+
 #ifdef __SWITCH__
 #include "NXAudioSink.h"
 #else
@@ -3845,6 +3855,7 @@ void SpotifyEngine::run() {
 
     setState(State::Ready, "Connected");
     restorePlaybackSession();
+    startConnectDealer();
     while (running) {
       try {
         ctx->session->handlePacket();
@@ -3859,6 +3870,7 @@ void SpotifyEngine::run() {
                std::string("Spotify engine error: ") + error.what());
   }
 
+  stopConnectDealer();
   if (!running) break;
   nxlog::push("Spotify engine waiting for an on-screen retry");
   {
@@ -3904,6 +3916,11 @@ void SpotifyEngine::shutdown() {
   if (loggedInSemaphore) loggedInSemaphore->give();
   retryCondition.notify_all();
 
+  // The dealer uses ctx, tokens and the playback controls: stop it before
+  // the browse workers and the session it depends on.
+  nxlog::push("Spotify shutdown: stopping Connect dealer");
+  stopConnectDealer();
+
   // Browse workers can use ctx/session to acquire tokens. Cancel their libcurl
   // transfers through running=false and join them before disconnecting those
   // dependencies. The previous reverse order was a use-after-disconnect race
@@ -3942,3 +3959,666 @@ void SpotifyEngine::shutdown() {
   currentState = State::NoConfig;
   nxlog::push("Spotify shutdown complete");
 }
+
+// ---- Spotify Connect: dealer + connect-state ------------------------------
+//
+// cspot only speaks the legacy SPIRC channel, which current Spotify clients no
+// longer use to list devices. The background service therefore announces
+// itself through the modern path: a dealer WebSocket supplies a connection id,
+// the device state is PUT to connect-state, and phone commands arrive back on
+// the same WebSocket as "request" messages.
+
+#ifdef SWITIFY_BACKGROUND_SERVICE
+namespace {
+constexpr const char* CONNECT_STATE_HOST = "https://spclient.wg.spotify.com";
+constexpr const char* DEALER_FALLBACK_HOST = "dealer.spotify.com";
+constexpr size_t DEALER_MAX_MESSAGE = 32 * 1024;
+constexpr size_t CONNECT_MAX_INFLATED = 256 * 1024;
+constexpr uint32_t DEVICE_TYPE_GAME_CONSOLE = 9;
+
+enum PutStateReason : uint32_t {
+  PUT_NEW_DEVICE = 3,
+  PUT_PLAYER_STATE_CHANGED = 4,
+  PUT_VOLUME_CHANGED = 5,
+};
+
+void protoKey(std::vector<uint8_t>& out, uint32_t field, uint32_t wire) {
+  protoVarint(out, (static_cast<uint64_t>(field) << 3) | wire);
+}
+
+void protoUint(std::vector<uint8_t>& out, uint32_t field, uint64_t value) {
+  protoKey(out, field, 0);
+  protoVarint(out, value);
+}
+
+void protoBool(std::vector<uint8_t>& out, uint32_t field, bool value) {
+  if (value) protoUint(out, field, 1);
+}
+
+void protoDouble(std::vector<uint8_t>& out, uint32_t field, double value) {
+  protoKey(out, field, 1);
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  for (int i = 0; i < 8; ++i)
+    out.push_back(static_cast<uint8_t>(bits >> (8 * i)));
+}
+
+std::string randomHex(size_t bytes) {
+  static const char* digits = "0123456789abcdef";
+  std::random_device device;
+  std::string out;
+  out.reserve(bytes * 2);
+  for (size_t i = 0; i < bytes; ++i) {
+    const unsigned value = device() & 0xff;
+    out += digits[value >> 4];
+    out += digits[value & 15];
+  }
+  return out;
+}
+
+// cspot reports track ids as the hex GID; connect-state wants base62 URIs.
+std::string gidHexToBase62(const std::string& hex) {
+  if (hex.size() != 32) return "";
+  std::vector<uint8_t> number;
+  for (size_t i = 0; i < hex.size(); i += 2) {
+    const auto nibble = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+      if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+      return -1;
+    };
+    const int high = nibble(hex[i]);
+    const int low = nibble(hex[i + 1]);
+    if (high < 0 || low < 0) return "";
+    number.push_back(static_cast<uint8_t>(high * 16 + low));
+  }
+  static const char* alphabet =
+      "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  std::string out;
+  for (int digit = 0; digit < 22; ++digit) {
+    unsigned remainder = 0;
+    for (auto& byte : number) {
+      const unsigned value = remainder * 256 + byte;
+      byte = static_cast<uint8_t>(value / 62);
+      remainder = value % 62;
+    }
+    out += alphabet[remainder];
+  }
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
+std::vector<uint8_t> base64Decode(const std::string& text) {
+  size_t length = 0;
+  const auto* input = reinterpret_cast<const unsigned char*>(text.data());
+  mbedtls_base64_decode(nullptr, 0, &length, input, text.size());
+  std::vector<uint8_t> out(length);
+  if (length == 0 ||
+      mbedtls_base64_decode(out.data(), out.size(), &length, input,
+                            text.size()) != 0)
+    return {};
+  out.resize(length);
+  return out;
+}
+
+bool gunzip(const std::vector<uint8_t>& input, std::vector<uint8_t>& output) {
+  z_stream stream{};
+  if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) return false;
+  stream.next_in = const_cast<Bytef*>(input.data());
+  stream.avail_in = static_cast<uInt>(input.size());
+  output.clear();
+  uint8_t chunk[4096];
+  int ret = Z_OK;
+  while (ret != Z_STREAM_END) {
+    stream.next_out = chunk;
+    stream.avail_out = sizeof(chunk);
+    ret = inflate(&stream, Z_NO_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) break;
+    output.insert(output.end(), chunk, chunk + (sizeof(chunk) - stream.avail_out));
+    if (output.size() > CONNECT_MAX_INFLATED) {
+      ret = Z_MEM_ERROR;
+      break;
+    }
+    if (ret == Z_OK && stream.avail_in == 0 && stream.avail_out != 0) break;
+  }
+  inflateEnd(&stream);
+  return ret == Z_STREAM_END;
+}
+
+// Dealer "message" bodies: base64 payload chunks, optionally gzip encoded.
+std::vector<uint8_t> dealerPayload(const Json& message) {
+  std::vector<uint8_t> raw;
+  const auto payloads = message.find("payloads");
+  if (payloads == message.end() || !payloads->is_array()) return raw;
+  for (const auto& part : *payloads) {
+    if (!part.is_string()) continue;
+    const auto bytes = base64Decode(part.get<std::string>());
+    raw.insert(raw.end(), bytes.begin(), bytes.end());
+  }
+  const auto headers = message.find("headers");
+  if (headers != message.end() && headers->is_object() &&
+      headers->value("Transfer-Encoding", "") == "gzip") {
+    std::vector<uint8_t> inflated;
+    if (gunzip(raw, inflated)) return inflated;
+    return {};
+  }
+  return raw;
+}
+
+std::string printable(const std::vector<uint8_t>& bytes, size_t limit) {
+  std::string out;
+  for (size_t i = 0; i < bytes.size() && out.size() < limit; ++i) {
+    const unsigned char c = bytes[i];
+    out += (c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '.';
+  }
+  return out;
+}
+
+struct SentConnectState {
+  bool valid = false;
+  std::string uri;
+  bool paused = true;
+  bool hasTrack = false;
+  bool shuffle = false;
+  SpotifyEngine::RepeatMode repeat = SpotifyEngine::RepeatMode::Off;
+  uint32_t volume = 0;
+  uint32_t positionMs = 0;
+  std::chrono::steady_clock::time_point sentAt{};
+};
+}  // namespace
+
+void SpotifyEngine::startConnectDealer() {
+  std::lock_guard<std::mutex> lock(connectMutex);
+  if (!running.load() || connectThread.joinable()) return;
+  connectStop = false;
+  try {
+    connectThread = std::thread([this] {
+      try {
+        connectDealerLoop();
+      } catch (const std::exception& error) {
+        nxlog::pushf("Connect: dealer stopped: %s", error.what());
+      } catch (...) {
+        nxlog::push("Connect: dealer stopped");
+      }
+    });
+  } catch (const std::exception& error) {
+    nxlog::pushf("Connect: dealer thread start failed: %s", error.what());
+  }
+}
+
+void SpotifyEngine::stopConnectDealer() {
+  std::thread thread;
+  {
+    std::lock_guard<std::mutex> lock(connectMutex);
+    connectStop = true;
+    thread = std::move(connectThread);
+  }
+  if (thread.joinable()) thread.join();
+}
+
+void SpotifyEngine::connectDealerLoop() {
+  auto context = ctx;
+  if (!context) return;
+  const std::string deviceId = context->config.deviceId;
+  const auto alive = [this] { return running.load() && !connectStop.load(); };
+  const auto pause = [&](int milliseconds) {
+    for (int waited = 0; waited < milliseconds && alive(); waited += 100)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  };
+  const auto nowMs = [&] {
+    return static_cast<uint64_t>(context->timeProvider->getSyncedTimestamp());
+  };
+
+#ifdef __SWITCH__
+  // Everything runs on core 3. Keep the dealer below audio and AP threads.
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 58);
+#endif
+  const ObserverId observer =
+      subscribe([this] { connectStateDirty.store(true); });
+  const std::string sessionId = randomHex(16);
+  std::string playbackId = randomHex(16);
+  uint32_t messageId = 0;
+  uint64_t startedPlayingAt = 0;
+  int backoffMs = 2000;
+
+  while (alive()) {
+    std::string token;
+    {
+      std::lock_guard<std::mutex> lock(tokenMutex);
+      token = login5AccessToken();
+    }
+    if (token.empty()) {
+      nxlog::push("Connect: no access token yet, dealer waits");
+      pause(backoffMs);
+      backoffMs = std::min(backoffMs * 2, 60000);
+      continue;
+    }
+
+    std::string dealerHost = DEALER_FALLBACK_HOST;
+    uint16_t dealerPort = 443;
+    try {
+      const auto response = webRequest(
+          "https://apresolve.spotify.com/?type=dealer", "GET", {},
+          {{"User-Agent", "Spotify/127700358 Linux/0 (Switify)"}}, &running);
+      if (response.statusCode == 200) {
+        const Json body = Json::parse(responseText(response.body));
+        const auto dealers = body.find("dealer");
+        if (dealers != body.end() && dealers->is_array() && !dealers->empty() &&
+            dealers->front().is_string()) {
+          const std::string entry = dealers->front().get<std::string>();
+          const size_t colon = entry.rfind(':');
+          dealerHost = entry.substr(0, colon);
+          if (colon != std::string::npos)
+            dealerPort = static_cast<uint16_t>(
+                std::atoi(entry.c_str() + colon + 1));
+        }
+      } else {
+        nxlog::pushf("Connect: apresolve HTTP %d, using fallback dealer",
+                     response.statusCode);
+      }
+    } catch (const std::exception& error) {
+      nxlog::pushf("Connect: apresolve failed (%s), using fallback dealer",
+                   error.what());
+    }
+    if (!alive()) break;
+
+    WebSocketClient socket(DEALER_MAX_MESSAGE);
+    std::string error;
+    int handshakeStatus = 0;
+    if (!socket.connect(dealerHost, dealerPort,
+                        "/?access_token=" + urlEncode(token), error,
+                        handshakeStatus)) {
+      nxlog::pushf("Connect: dealer connection to %s failed: %s",
+                   dealerHost.c_str(), error.c_str());
+      if (handshakeStatus == 401) {
+        std::lock_guard<std::mutex> lock(tokenMutex);
+        cachedLogin5Token.clear();
+        login5TokenExpiresAt = 0;
+      }
+      pause(backoffMs);
+      backoffMs = std::min(backoffMs * 2, 60000);
+      continue;
+    }
+    token.clear();
+    nxlog::pushf("Connect: dealer connected (%s:%u)", dealerHost.c_str(),
+                 static_cast<unsigned>(dealerPort));
+    backoffMs = 2000;
+
+    std::string connectionId;
+    bool announce = true;
+    SentConnectState sent;
+    auto lastPing = std::chrono::steady_clock::now();
+    auto nextPutAllowed = std::chrono::steady_clock::now();
+    int putFailures = 0;
+
+    const auto putState = [&](uint32_t reason) -> int {
+      const NowPlaying now = nowPlaying();
+      const uint64_t timestamp = nowMs();
+      const bool playing = now.hasTrack && !now.paused;
+      if (playing && startedPlayingAt == 0) startedPlayingAt = timestamp;
+      if (!now.hasTrack) startedPlayingAt = 0;
+
+      std::string trackUri = now.uri;
+      if (trackUri.empty() && !now.id.empty()) {
+        const std::string base62 =
+            now.id.size() == 22 ? now.id : gidHexToBase62(now.id);
+        if (!base62.empty()) trackUri = "spotify:track:" + base62;
+      }
+      if (trackUri != sent.uri) playbackId = randomHex(16);
+      const uint32_t volume = static_cast<uint32_t>(
+          std::clamp(now.volume, 0.0f, 1.0f) * 65535.0f);
+
+      std::vector<uint8_t> capabilities;
+      protoBool(capabilities, 2, true);   // can_be_player
+      protoBool(capabilities, 5, true);   // gaia_eq_connect_id
+      protoBool(capabilities, 6, true);   // supports_logout
+      protoBool(capabilities, 7, true);   // is_observable
+      protoUint(capabilities, 8, 64);     // volume_steps
+      protoString(capabilities, 9, "audio/track");
+      protoString(capabilities, 9, "audio/episode");
+      protoBool(capabilities, 10, true);  // command_acks
+      protoBool(capabilities, 16, true);  // is_controllable
+      protoBool(capabilities, 19, true);  // supports_transfer_command
+      protoBool(capabilities, 20, true);  // supports_command_request
+      protoBool(capabilities, 23, true);  // supports_gzip_pushes
+
+      std::vector<uint8_t> deviceInfo;
+      protoBool(deviceInfo, 1, true);
+      protoUint(deviceInfo, 2, volume);
+      protoString(deviceInfo, 3, DEVICE_NAME);
+      protoBytes(deviceInfo, 4, capabilities);
+      protoString(deviceInfo, 6, "Switify 0.7.1");
+      protoUint(deviceInfo, 7, DEVICE_TYPE_GAME_CONSOLE);
+      protoString(deviceInfo, 9, "3.2.6");
+      protoString(deviceInfo, 10, deviceId);
+      protoString(deviceInfo, 13, WEB_CLIENT_ID);
+      protoString(deviceInfo, 14, "Nintendo");
+      protoString(deviceInfo, 15, "Switch");
+
+      std::vector<uint8_t> playerState;
+      protoUint(playerState, 1, timestamp);
+      if (now.hasTrack && !trackUri.empty()) {
+        std::vector<uint8_t> track;
+        protoString(track, 1, trackUri);
+        protoString(track, 6, "context");
+        protoBytes(playerState, 7, track);
+        protoString(playerState, 8, playbackId);
+        protoDouble(playerState, 9, 1.0);
+        protoUint(playerState, 10, now.positionMs);
+        protoUint(playerState, 11, now.durationMs);
+        protoBool(playerState, 12, true);
+        protoBool(playerState, 13, now.paused);
+      }
+      std::vector<uint8_t> options;
+      protoBool(options, 1, now.shuffle);
+      protoBool(options, 2, now.repeatMode == RepeatMode::All);
+      protoBool(options, 3, now.repeatMode == RepeatMode::One);
+      protoBytes(playerState, 16, options);
+      protoString(playerState, 23, sessionId);
+
+      std::vector<uint8_t> device;
+      protoBytes(device, 1, deviceInfo);
+      protoBytes(device, 2, playerState);
+
+      std::vector<uint8_t> request;
+      protoBytes(request, 2, device);
+      protoUint(request, 3, 2);  // member_type = CONNECT_STATE
+      protoBool(request, 4, now.hasTrack);
+      protoUint(request, 5, reason);
+      protoUint(request, 6, ++messageId);
+      if (startedPlayingAt) {
+        protoUint(request, 9, startedPlayingAt);
+        protoUint(request, 11, timestamp - startedPlayingAt);
+      }
+      protoUint(request, 12, timestamp);
+
+      int status = 0;
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string accessToken;
+        std::string clientToken;
+        {
+          std::lock_guard<std::mutex> lock(tokenMutex);
+          accessToken = login5AccessToken();
+          clientToken = spotifyClientToken();
+        }
+        if (accessToken.empty()) return 0;
+        const WebHeaders headers = {
+            {"Authorization", "Bearer " + accessToken},
+            {"client-token", clientToken},
+            {"X-Spotify-Connection-Id", connectionId},
+            {"Content-Type", "application/x-protobuf"},
+            {"Accept", "application/x-protobuf"},
+            {"User-Agent", "Spotify/127700358 Linux/0 (Switify)"}};
+        WebResponse response;
+        try {
+          response = webRequest(std::string(CONNECT_STATE_HOST) +
+                                    "/connect-state/v1/devices/" + deviceId,
+                                "PUT", request, headers, &running);
+        } catch (const std::exception& transportError) {
+          nxlog::pushf("Connect: PUT state transport error: %s",
+                       transportError.what());
+          return 0;
+        }
+        status = response.statusCode;
+        nxlog::pushf("Connect: PUT state (reason %u, msg %u, %s) -> HTTP %d",
+                     reason, messageId,
+                     now.hasTrack ? (now.paused ? "paused" : "playing")
+                                  : "idle",
+                     status);
+        if (status == 401 && attempt == 0) {
+          std::lock_guard<std::mutex> lock(tokenMutex);
+          cachedLogin5Token.clear();
+          login5TokenExpiresAt = 0;
+          login5RetryAfter = 0;
+          continue;
+        }
+        if (status < 200 || status >= 300)
+          nxlog::pushf("Connect: PUT response: %s",
+                       printable(response.body, 300).c_str());
+        break;
+      }
+      if (status >= 200 && status < 300) {
+        sent.valid = true;
+        sent.uri = trackUri;
+        sent.paused = now.paused;
+        sent.hasTrack = now.hasTrack;
+        sent.shuffle = now.shuffle;
+        sent.repeat = now.repeatMode;
+        sent.volume = volume;
+        sent.positionMs = now.positionMs;
+        sent.sentAt = std::chrono::steady_clock::now();
+      }
+      return status;
+    };
+
+    // Returns 0 when nothing meaningful changed since the last PUT.
+    const auto changeReason = [&]() -> uint32_t {
+      if (!sent.valid) return PUT_NEW_DEVICE;
+      const NowPlaying now = nowPlaying();
+      std::string trackUri = now.uri;
+      if (trackUri.empty() && !now.id.empty()) {
+        const std::string base62 =
+            now.id.size() == 22 ? now.id : gidHexToBase62(now.id);
+        if (!base62.empty()) trackUri = "spotify:track:" + base62;
+      }
+      if (trackUri != sent.uri || now.paused != sent.paused ||
+          now.hasTrack != sent.hasTrack || now.shuffle != sent.shuffle ||
+          now.repeatMode != sent.repeat)
+        return PUT_PLAYER_STATE_CHANGED;
+      int64_t expected = sent.positionMs;
+      if (!sent.paused)
+        expected += std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - sent.sentAt)
+                        .count();
+      if (std::llabs(static_cast<long long>(now.positionMs) - expected) > 2000)
+        return PUT_PLAYER_STATE_CHANGED;
+      const uint32_t volume = static_cast<uint32_t>(
+          std::clamp(now.volume, 0.0f, 1.0f) * 65535.0f);
+      if (volume != sent.volume) return PUT_VOLUME_CHANGED;
+      return 0;
+    };
+
+    const auto handleCommand = [&](const std::string& endpoint,
+                                   const Json& command) -> bool {
+      const NowPlaying now = nowPlaying();
+      const auto flag = [&](const char* key) {
+        const auto value = command.find(key);
+        return value != command.end() && value->is_boolean() &&
+               value->get<bool>();
+      };
+      nxlog::pushf("Connect: phone command '%s'", endpoint.c_str());
+      if (endpoint == "pause") {
+        if (!now.paused) playPause();
+      } else if (endpoint == "resume") {
+        if (now.paused) playPause();
+      } else if (endpoint == "skip_next") {
+        next();
+      } else if (endpoint == "skip_prev") {
+        previous();
+      } else if (endpoint == "seek_to") {
+        int64_t position = 0;
+        const auto value = command.find("value");
+        if (value != command.end() && value->is_number())
+          position = value->get<int64_t>();
+        const auto relative = command.find("relative");
+        if (relative != command.end() && relative->is_string() &&
+            relative->get<std::string>() == "current")
+          position += now.positionMs;
+        seekToMs(static_cast<uint32_t>(std::max<int64_t>(0, position)));
+      } else if (endpoint == "set_shuffling_context") {
+        if (flag("value") != now.shuffle) toggleShuffle();
+      } else if (endpoint == "set_repeating_context") {
+        if (flag("value")) {
+          if (now.repeatMode == RepeatMode::Off) setRepeatMode(RepeatMode::All);
+        } else if (now.repeatMode == RepeatMode::All) {
+          setRepeatMode(RepeatMode::Off);
+        }
+      } else if (endpoint == "set_repeating_track") {
+        if (flag("value"))
+          setRepeatMode(RepeatMode::One);
+        else if (now.repeatMode == RepeatMode::One)
+          setRepeatMode(RepeatMode::Off);
+      } else if (endpoint == "set_options") {
+        const auto options = command.find("options");
+        const Json& source =
+            options != command.end() && options->is_object() ? *options
+                                                              : command;
+        const auto shuffle = source.find("shuffling_context");
+        if (shuffle != source.end() && shuffle->is_boolean() &&
+            shuffle->get<bool>() != now.shuffle)
+          toggleShuffle();
+        const bool track = source.value("repeating_track", false);
+        const bool context = source.value("repeating_context", false);
+        setRepeatMode(track ? RepeatMode::One
+                            : (context ? RepeatMode::All : RepeatMode::Off));
+      } else if (endpoint == "transfer" || endpoint == "play") {
+        // Full TransferState decoding is not implemented: take over by
+        // resuming Switify's own session.
+        if (now.paused) playPause();
+      } else {
+        nxlog::pushf("Connect: command '%s' ignored", endpoint.c_str());
+      }
+      connectStateDirty.store(true);
+      return true;
+    };
+
+    const auto handleMessage = [&](const std::string& text) {
+      // Cluster pushes echo every state change and are the largest messages.
+      // Only the active-device flag would be used, so skip them unparsed:
+      // JSON + base64 + gzip work competes with Vorbis on the single core.
+      if (text.find("hm://connect-state/v1/cluster") != std::string::npos)
+        return;
+      const Json message = Json::parse(text, nullptr, false);
+      if (message.is_discarded() || !message.is_object()) return;
+      const std::string type = message.value("type", "");
+      if (type == "pong") return;
+      if (type == "message") {
+        const std::string uri = message.value("uri", "");
+        if (uri.rfind("hm://pusher/v1/connections/", 0) == 0) {
+          std::string id;
+          const auto headers = message.find("headers");
+          if (headers != message.end() && headers->is_object())
+            id = headers->value("Spotify-Connection-Id", "");
+          if (id.empty()) id = uri.substr(strlen("hm://pusher/v1/connections/"));
+          if (!id.empty()) {
+            connectionId = id;
+            announce = true;
+            sent.valid = false;
+            nxlog::push("Connect: dealer connection id received");
+          }
+        } else if (uri == "hm://connect-state/v1/connect/volume") {
+          const auto payload = dealerPayload(message);
+          uint64_t volume = 0;
+          if (findProtoVarint(payload, 1, volume)) {
+            nxlog::pushf("Connect: phone volume %u",
+                         static_cast<unsigned>(volume));
+            setVolume(static_cast<float>(std::min<uint64_t>(volume, 65535)) /
+                      65535.0f);
+            connectStateDirty.store(true);
+          }
+        } else if (uri.rfind("hm://connect-state/v1/cluster", 0) == 0) {
+          const auto payload = dealerPayload(message);
+          std::vector<uint8_t> cluster;
+          std::vector<uint8_t> active;
+          if (findProtoBytes(payload, 1, cluster) &&
+              findProtoBytes(cluster, 2, active)) {
+            const std::string activeId(active.begin(), active.end());
+            nxlog::pushf("Connect: cluster update, active device %s",
+                         activeId == deviceId ? "= Switify" : "= other");
+          }
+        }
+        return;
+      }
+      if (type == "request") {
+        const std::string key = message.value("key", "");
+        Json body;
+        const auto payload = message.find("payload");
+        if (payload != message.end() && payload->is_object()) {
+          const auto compressed = payload->find("compressed");
+          if (compressed != payload->end() && compressed->is_string()) {
+            std::vector<uint8_t> inflated;
+            if (gunzip(base64Decode(compressed->get<std::string>()), inflated))
+              body = Json::parse(inflated.begin(), inflated.end(), nullptr,
+                                 false);
+          } else {
+            body = *payload;
+          }
+        }
+        bool success = false;
+        if (body.is_object()) {
+          const auto command = body.find("command");
+          if (command != body.end() && command->is_object())
+            success = handleCommand(command->value("endpoint", ""), *command);
+        }
+        if (!success) nxlog::push("Connect: unreadable phone request");
+        const Json reply = {{"type", "reply"},
+                            {"key", key},
+                            {"payload", {{"success", success}}}};
+        socket.sendText(reply.dump());
+      }
+    };
+
+    auto lastMessageAt = std::chrono::steady_clock::time_point{};
+    while (alive() && socket.isOpen()) {
+      std::string text;
+      const auto result = socket.read(text, 250);
+      if (result == WebSocketClient::ReadResult::Message) {
+        handleMessage(text);
+        lastMessageAt = std::chrono::steady_clock::now();
+        continue;  // drain bursts (volume drags) before any PUT
+      } else if (result != WebSocketClient::ReadResult::Timeout) {
+        nxlog::pushf("Connect: dealer %s",
+                     result == WebSocketClient::ReadResult::Closed
+                         ? "closed by server"
+                         : "protocol error");
+        break;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      if (now - lastPing >= std::chrono::seconds(30)) {
+        socket.sendText("{\"type\":\"ping\"}");
+        lastPing = now;
+      }
+      if (connectionId.empty() || now < nextPutAllowed) continue;
+      // Wait for the phone to go quiet: a volume drag is dozens of pushes and
+      // each PUT is a fresh TLS request that blocks this thread.
+      if (!announce && now - lastMessageAt < std::chrono::milliseconds(400))
+        continue;
+      uint32_t reason = 0;
+      if (announce) {
+        reason = PUT_NEW_DEVICE;
+      } else if (connectStateDirty.exchange(false)) {
+        reason = changeReason();
+      }
+      if (reason == 0) continue;
+      const int status = putState(reason);
+      if (status >= 200 && status < 300) {
+        announce = false;
+        putFailures = 0;
+        nextPutAllowed = now + std::chrono::milliseconds(500);
+      } else {
+        // Keep retrying the announcement, but slowly enough to leave room
+        // for the rest of the service and to keep the log readable.
+        ++putFailures;
+        if (!announce) connectStateDirty.store(true);
+        nextPutAllowed =
+            now + std::chrono::seconds(std::min(60, 5 * putFailures));
+      }
+    }
+    socket.close();
+    if (socket.droppedMessages())
+      nxlog::pushf("Connect: %u oversized dealer messages skipped",
+                   static_cast<unsigned>(socket.droppedMessages()));
+    if (!alive()) break;
+    nxlog::push("Connect: dealer disconnected, reconnecting");
+    pause(backoffMs);
+    backoffMs = std::min(backoffMs * 2, 60000);
+  }
+  unsubscribe(observer);
+  nxlog::push("Connect: dealer stopped");
+}
+#else
+void SpotifyEngine::startConnectDealer() {}
+void SpotifyEngine::stopConnectDealer() {}
+void SpotifyEngine::connectDealerLoop() {}
+#endif
