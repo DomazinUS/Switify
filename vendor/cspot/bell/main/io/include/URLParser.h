@@ -4,6 +4,7 @@
 #include <regex>      // for match_results, match_results<>::value_type, sub...
 #include <stdexcept>  // for invalid_argument
 #include <string>     // for string, allocator, operator+, char_traits, oper...
+#include <vector>     // for vector
 
 namespace bell {
 class URLParser {
@@ -64,6 +65,42 @@ class URLParser {
   static const std::regex urlParseRegex;
 #endif
 
+#ifndef BELL_DISABLE_REGEX
+  // Iterative equivalent of
+  // ^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(\?(?:[^#]*))?(#(?:.*))?
+  // Returns {url, schema, host, path, query-with-'?', fragment-with-'#'}.
+  static std::vector<std::string> splitUrl(const std::string& url) {
+    std::vector<std::string> match(6);
+    match[0] = url;
+    size_t pos = 0;
+    const size_t schemaEnd = url.find_first_of(":/?#");
+    if (schemaEnd != std::string::npos && schemaEnd > 0 &&
+        url[schemaEnd] == ':') {
+      match[1] = url.substr(0, schemaEnd);
+      pos = schemaEnd + 1;
+    }
+    if (url.compare(pos, 2, "//") == 0) {
+      pos += 2;
+      size_t end = url.find_first_of("/?#", pos);
+      if (end == std::string::npos) end = url.size();
+      match[2] = url.substr(pos, end - pos);
+      pos = end;
+    }
+    size_t pathEnd = url.find_first_of("?#", pos);
+    if (pathEnd == std::string::npos) pathEnd = url.size();
+    match[3] = url.substr(pos, pathEnd - pos);
+    pos = pathEnd;
+    if (pos < url.size() && url[pos] == '?') {
+      size_t end = url.find('#', pos);
+      if (end == std::string::npos) end = url.size();
+      match[4] = url.substr(pos, end - pos);
+      pos = end;
+    }
+    if (pos < url.size() && url[pos] == '#') match[5] = url.substr(pos);
+    return match;
+  }
+#endif
+
   static URLParser parse(const std::string& url) {
     URLParser parser;
 
@@ -72,8 +109,11 @@ class URLParser {
     std::vector<std::string> match(6);
     parser.parse(url.c_str(), match);
 #else
-    std::cmatch match;
-    std::regex_match(url.c_str(), match, parser.urlParseRegex);
+    // libstdc++'s std::regex_match recurses once per input character and
+    // overflows bell's bounded task stacks (36 KiB on the Switch service) on
+    // Spotify storage-resolve/CDN URLs. Split the URL iteratively with the
+    // same grammar as urlParseRegex instead.
+    std::vector<std::string> match = splitUrl(url);
 #endif
 
     if (match.size() < 3) {
