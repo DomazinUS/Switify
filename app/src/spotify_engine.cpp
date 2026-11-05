@@ -3972,7 +3972,7 @@ void SpotifyEngine::shutdown() {
 namespace {
 constexpr const char* CONNECT_STATE_HOST = "https://spclient.wg.spotify.com";
 constexpr const char* DEALER_FALLBACK_HOST = "dealer.spotify.com";
-constexpr size_t DEALER_MAX_MESSAGE = 64 * 1024;
+constexpr size_t DEALER_MAX_MESSAGE = 32 * 1024;
 constexpr size_t CONNECT_MAX_INFLATED = 256 * 1024;
 constexpr uint32_t DEVICE_TYPE_GAME_CONSOLE = 9;
 
@@ -4169,6 +4169,10 @@ void SpotifyEngine::connectDealerLoop() {
     return static_cast<uint64_t>(context->timeProvider->getSyncedTimestamp());
   };
 
+#ifdef __SWITCH__
+  // Everything runs on core 3. Keep the dealer below audio and AP threads.
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 58);
+#endif
   const ObserverId observer =
       subscribe([this] { connectStateDirty.store(true); });
   const std::string sessionId = randomHex(16);
@@ -4479,6 +4483,11 @@ void SpotifyEngine::connectDealerLoop() {
     };
 
     const auto handleMessage = [&](const std::string& text) {
+      // Cluster pushes echo every state change and are the largest messages.
+      // Only the active-device flag would be used, so skip them unparsed:
+      // JSON + base64 + gzip work competes with Vorbis on the single core.
+      if (text.find("hm://connect-state/v1/cluster") != std::string::npos)
+        return;
       const Json message = Json::parse(text, nullptr, false);
       if (message.is_discarded() || !message.is_object()) return;
       const std::string type = message.value("type", "");
@@ -4549,11 +4558,14 @@ void SpotifyEngine::connectDealerLoop() {
       }
     };
 
+    auto lastMessageAt = std::chrono::steady_clock::time_point{};
     while (alive() && socket.isOpen()) {
       std::string text;
-      const auto result = socket.read(text, 500);
+      const auto result = socket.read(text, 250);
       if (result == WebSocketClient::ReadResult::Message) {
         handleMessage(text);
+        lastMessageAt = std::chrono::steady_clock::now();
+        continue;  // drain bursts (volume drags) before any PUT
       } else if (result != WebSocketClient::ReadResult::Timeout) {
         nxlog::pushf("Connect: dealer %s",
                      result == WebSocketClient::ReadResult::Closed
@@ -4568,6 +4580,10 @@ void SpotifyEngine::connectDealerLoop() {
         lastPing = now;
       }
       if (connectionId.empty() || now < nextPutAllowed) continue;
+      // Wait for the phone to go quiet: a volume drag is dozens of pushes and
+      // each PUT is a fresh TLS request that blocks this thread.
+      if (!announce && now - lastMessageAt < std::chrono::milliseconds(400))
+        continue;
       uint32_t reason = 0;
       if (announce) {
         reason = PUT_NEW_DEVICE;

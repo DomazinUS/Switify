@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <thread>
 
 #include "X509Bundle.h"
 
@@ -236,7 +237,26 @@ bool WebSocketClient::sendText(const std::string& text) {
 
 int WebSocketClient::fill(uint32_t timeoutMs) {
   if (!tls || !open) return -1;
-  mbedtls_ssl_conf_read_timeout(&tls->conf, std::max<uint32_t>(1, timeoutMs));
+  // The service only owns two bsd:u sessions. A blocking select()/recv here
+  // would pin one of them for the whole timeout and stall the AP, CDN and
+  // HTTP traffic queued behind it. Poll with a zero timeout and wait in user
+  // space instead; only call into mbedtls once bytes are actually pending.
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMs);
+  for (;;) {
+    if (mbedtls_ssl_get_bytes_avail(&tls->ssl) > 0) break;
+    const int ready =
+        mbedtls_net_poll(&tls->net, MBEDTLS_NET_POLL_READ, 0);
+    if (ready < 0) {
+      open = false;
+      return -1;
+    }
+    if (ready & MBEDTLS_NET_POLL_READ) break;
+    if (std::chrono::steady_clock::now() >= deadline) return 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  // Data is pending: the rest of a TLS record normally follows immediately.
+  mbedtls_ssl_conf_read_timeout(&tls->conf, 200);
   uint8_t buffer[READ_CHUNK];
   const int ret = mbedtls_ssl_read(&tls->ssl, buffer, sizeof(buffer));
   if (ret > 0) {
@@ -369,6 +389,7 @@ WebSocketClient::ReadResult WebSocketClient::read(std::string& message,
       close();
       return ReadResult::Closed;
     }
-    if (got == 0) return ReadResult::Timeout;
+    if (got == 0 && std::chrono::steady_clock::now() >= deadline)
+      return ReadResult::Timeout;
   }
 }
