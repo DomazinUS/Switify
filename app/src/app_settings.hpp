@@ -22,6 +22,11 @@ Snapshot get();
 bool playbackShortcutsEnabled();
 void setPlaybackShortcutsEnabled(bool enabled);
 
+#ifdef __SWITCH__
+bool remoteControlEnabled();
+bool setRemoteControlEnabled(bool enabled);
+#endif
+
 void setOutputVolume(float volume);
 void setHighQuality(bool enabled);
 

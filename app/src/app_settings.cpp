@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <cstdio>
 #include <fstream>
 #include <mutex>
 
@@ -15,6 +17,9 @@
 namespace swsettings {
 namespace {
 #ifdef __SWITCH__
+// Only the standalone settings screen writes this preference. A running
+// service can save its own audio settings without overwriting the choice.
+constexpr const char* kRemoteControlFile = "/config/Switify/remote-control.enabled";
 constexpr const char* kSettingsFile = "/config/Switify/settings.json";
 #else
 constexpr const char* kSettingsFile = "settings.json";
@@ -116,6 +121,22 @@ void setPlaybackShortcutsEnabled(bool enabled) {
   gPlaybackShortcuts = enabled;
   save();
 }
+
+#ifdef __SWITCH__
+bool remoteControlEnabled() {
+  struct stat info {};
+  return stat(kRemoteControlFile, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+bool setRemoteControlEnabled(bool enabled) {
+  if (!enabled) return std::remove(kRemoteControlFile) == 0 || errno == ENOENT;
+  mkdir("/config", 0755);
+  mkdir("/config/Switify", 0755);
+  std::ofstream marker(kRemoteControlFile);
+  marker.close();
+  return marker.good();
+}
+#endif
 
 void setOutputVolume(float volume) {
   gOutputVolume = clampVolume(volume);

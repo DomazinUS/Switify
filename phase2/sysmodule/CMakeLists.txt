@@ -48,6 +48,7 @@ add_executable(switify-background
   ../common/source/service_core.cpp
   ../../app/src/spotify_engine.cpp
   ../../app/src/app_settings.cpp
+  ../../app/src/websocket_client.cpp
   ../../targets/switch/NXAudioSink.cpp
   ../../targets/switch/NXConsoleLog.cpp
   ../../targets/switch/NXPlayer.cpp

@@ -2064,6 +2064,20 @@ SettingsTab::SettingsTab()
   shortcutHelp->setMarginTop(8);
   content->addView(shortcutHelp);
 
+#ifdef __SWITCH__
+  auto* remoteControl = new brls::BooleanCell();
+  remoteControl->init("Allow Spotify remote control", swsettings::remoteControlEnabled(),
+                      [remoteControl](bool enabled) {
+                        if (!swsettings::setRemoteControlEnabled(enabled)) {
+                          remoteControl->setOn(swsettings::remoteControlEnabled());
+                          brls::Application::notify("Could not save remote control setting");
+                          return;
+                        }
+                        brls::Application::notify("Applies next time the background service starts");
+                      });
+  content->addView(remoteControl);
+#endif
+
   auto* audioHeader = new brls::Header();
   audioHeader->setTitle("Audio");
   audioHeader->setMarginTop(16);

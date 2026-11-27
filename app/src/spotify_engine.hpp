@@ -267,6 +267,16 @@ class SpotifyEngine {
                          const std::string& path,
                          const std::string& jsonBody = "");
 
+  // Spotify Connect (dealer WebSocket + connect-state). Only active in the
+  // background service; the standalone NRO keeps these as no-ops.
+  void startConnectDealer();
+  void stopConnectDealer();
+  void connectDealerLoop();
+  std::mutex connectMutex;
+  std::thread connectThread;
+  std::atomic<bool> connectStop{false};
+  std::atomic<bool> connectStateDirty{false};
+
   std::thread engineThread;
   std::atomic<bool> running{false};
   std::atomic<bool> interactiveAuthentication{true};
