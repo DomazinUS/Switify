@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
     nxlog::push("NetLoader launch detected; connecting live log channel");
     nxlinkSocket = nxlinkStdio();
   }
-  nxlog::pushf("Switify 0.7.1 starting (nxlink live logs: %s)",
+  nxlog::pushf("Switify 0.8.0 starting (nxlink live logs: %s)",
                nxlinkSocket >= 0 ? "connected" : "off");
   if (sphairaApplicationSafeExit)
     nxlog::push("Sphaira application loader detected; safe HOME exit enabled");

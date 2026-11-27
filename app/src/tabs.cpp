@@ -2197,7 +2197,7 @@ SettingsTab::SettingsTab()
   aboutHeader->setMarginTop(16);
   content->addView(aboutHeader);
   content->addView(swui::makeStatePanel(
-      "Switify 0.7.1",
+      "Switify 0.8.0",
       "Created by HiroshiYamauchi\nA controller-first native Spotify client "
       "for Nintendo Switch homebrew."));
 
@@ -2205,7 +2205,7 @@ SettingsTab::SettingsTab()
       "About and credits",
       [](brls::View*) {
         showInformationPage(
-            "About Switify", "Version 0.7.1",
+            "About Switify", "Version 0.8.0",
             {{"Created by HiroshiYamauchi",
               "A controller-first native Spotify client for Nintendo Switch "
               "homebrew."},
@@ -2232,7 +2232,11 @@ SettingsTab::SettingsTab()
       [](brls::View*) {
         showInformationPage(
             "Changelog", "Complete Switify development history",
-            {{"Standalone 0.7.1 · safe Sphaira-forwarder exit",
+            {{"Standalone 0.8.0 and Overlay 0.6.0",
+              "Enable Spotify remote control for the background service in "
+              "Playback controls. This release also fixes service startup and "
+              "a crash when loading tracks with long streaming URLs."},
+             {"Standalone 0.7.1 · safe Sphaira-forwarder exit",
               "Completes Spotify, network, artwork, and Borealis teardown "
               "before exiting. When Sphaira itself runs from an application "
               "forwarder, Switify now exits safely to HOME instead of "

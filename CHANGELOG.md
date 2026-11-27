@@ -3,6 +3,13 @@
 All notable Switify changes are documented here. Standalone NRO and overlay
 versions are tracked independently because they are separate applications.
 
+## Standalone 0.8.0 and overlay 0.6.0 — 2026-11-27
+
+- Added an opt-in Spotify remote control setting for the background player.
+- Fixed a first-track crash when parsing long streaming URLs on a small stack.
+- Assigned the background service to the resource group for its applet memory pool.
+- Thanks to FrcJules for the fixes and Spotify Connect implementation in PR #9.
+
 ## Standalone NRO 0.7.1 — 2026-08-19
 
 ### Fixed

@@ -4288,7 +4288,7 @@ void SpotifyEngine::connectDealerLoop() {
       protoUint(deviceInfo, 2, volume);
       protoString(deviceInfo, 3, DEVICE_NAME);
       protoBytes(deviceInfo, 4, capabilities);
-      protoString(deviceInfo, 6, "Switify 0.7.1");
+      protoString(deviceInfo, 6, "Switify 0.8.0");
       protoUint(deviceInfo, 7, DEVICE_TYPE_GAME_CONSOLE);
       protoString(deviceInfo, 9, "3.2.6");
       protoString(deviceInfo, 10, deviceId);

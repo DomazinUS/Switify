@@ -21,8 +21,8 @@ independently installed experiences:
 
 | Component | Current version | Purpose |
 | --- | ---: | --- |
-| **Switify NRO** | **0.7.1** | Full-screen Home, Search, Library, collection browsing, first-time login, lyrics, and native playback. |
-| **Switify Overlay** | **0.5.0** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
+| **Switify NRO** | **0.8.0** | Full-screen Home, Search, Library, collection browsing, first-time login, lyrics, and native playback. |
+| **Switify Overlay** | **0.6.0** | Lightweight Ultrahand player and browser backed by an on-demand Atmosphere background service that can keep playing over games. |
 
 The two products do not share a process or live playback engine. They share
 only persistent authentication, settings, session metadata, and selected cache
@@ -84,14 +84,14 @@ then launch Switify.
 The [latest release](https://github.com/DomazinUS/Switify/releases/latest)
 contains:
 
-- `Switify-0.7.1.zip` — standalone full-screen application
-- `Switify-Overlay-0.5.0.zip` — Ultrahand overlay and dormant background service
-- `Switify-source-0.7.1.zip` — corresponding buildable source snapshot
+- `Switify-0.8.0.zip` — standalone full-screen application
+- `Switify-Overlay-0.6.0.zip` — Ultrahand overlay and dormant background service
+- `Switify-source-0.8.0.zip` — corresponding buildable source snapshot
 - `SHA256SUMS.txt` — SHA-256 checksums for all three archives
 
 ## Install the standalone app
 
-1. Download `Switify-0.7.1.zip` and extract it to the root of the SD card.
+1. Download `Switify-0.8.0.zip` and extract it to the root of the SD card.
 2. Confirm that the resulting file is
    `sdmc:/switch/Switify/Switify.nro`.
 3. Return the SD card to the console and launch Switify through title override.
@@ -118,13 +118,18 @@ If Switify does not appear in the device picker, verify that both devices are
 on the same non-guest Wi-Fi network, grant the phone app local-network access,
 and retry with Switify still open.
 
+To use Spotify on your phone as an optional remote for the background player,
+enable **Settings → Playback controls → Allow Spotify remote control** in the
+standalone app. Close the app and restart the background service. This setting
+defaults to off. Once paired, the Switch can browse and play using its own controls.
+
 ## Install the overlay
 
 Authenticate successfully in the NRO **before** installing or opening the
 overlay. The overlay intentionally has no separate login flow.
 
 1. Close the standalone NRO.
-2. Download `Switify-Overlay-0.5.0.zip` and extract it to the SD-card root.
+2. Download `Switify-Overlay-0.6.0.zip` and extract it to the SD-card root.
 3. Confirm these installed files:
 
        sdmc:/switch/.overlays/Switify.ovl

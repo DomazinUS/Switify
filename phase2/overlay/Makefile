@@ -15,7 +15,7 @@ SOURCES     := source ../ipc-client/source
 INCLUDES    := ../ipc-client/include ../common/include
 APP_TITLE   := Switify
 APP_AUTHOR  := HiroshiYamauchi
-APP_VERSION := 0.5.0
+APP_VERSION := 0.6.0
 NO_ICON     := 1
 
 ifeq ($(LIGHTWEIGHT),1)
